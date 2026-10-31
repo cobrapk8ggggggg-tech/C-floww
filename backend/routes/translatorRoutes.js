@@ -714,7 +714,7 @@ async function callTranslationProvider(provider, modelName, apiKey, prompt, opti
 }
 
 // --- THE TRANSLATION WORKER (STRICT FIRESTORE MODE) ---
-async function processTranslationJob(jobId) {
+async function processTranslationJob(jobId, options = {}) {
     try {
         const job = await TranslationJob.findById(jobId);
         if (!job || job.status !== 'active') return;
@@ -771,7 +771,7 @@ async function processTranslationJob(jobId) {
         const transPrompt = settings?.customPrompt || "You are a professional translator. Translate the novel chapter into Arabic. The source may be in ANY language (English, Chinese, Korean, Japanese, Russian, etc.) — translate ALL of it into Arabic with no exceptions. Output ONLY the Arabic translation. Use the glossary provided.";
         const extractPrompt = settings?.translatorExtractPrompt || DEFAULT_EXTRACT_PROMPT;
 
-        const chaptersToProcess = job.targetChapters.sort((a, b) => a - b);
+        const chaptersToProcess = (job.targetChapters || []).slice().sort((a, b) => a - b).slice(0, options.oneChapter ? 1 : undefined);
         const conversationContexts = { chapters: new Map(), glossary: new Map(), chapter_review: new Map() };
         let stickySuccessRoute = null;
 
@@ -1457,14 +1457,19 @@ if (jsonMatch) {
                 }
             }
 
-            await delay(2000); 
+            if (!options.oneChapter) await delay(2000); 
         }
 
         // Final check
         const finalJob = await TranslationJob.findById(jobId);
-        if (finalJob.status === 'active') {
-            await TranslationJob.findByIdAndUpdate(jobId, { status: 'completed' });
-            await pushLog(jobId, `🏁 اكتملت جميع الفصول!`, 'success');
+        if (finalJob && finalJob.status === 'active') {
+            const remaining = (finalJob.targetChapters || []).length;
+            if (remaining === 0) {
+                await TranslationJob.findByIdAndUpdate(jobId, { status: 'completed' });
+                await pushLog(jobId, `🏁 اكتملت جميع الفصول!`, 'success');
+            } else {
+                await pushLog(jobId, `⏳ بقي ${remaining} فصلاً — يمكن استئناف المعالجة`, 'warning');
+            }
         }
 
     } catch (e) {
@@ -1595,7 +1600,7 @@ module.exports = function(app, verifyToken, verifyAdmin) {
                 existingJob.logs.push({ message: '▶️ تم استئناف المهمة', type: 'info' });
                 await existingJob.save();
                 
-                processTranslationJob(existingJob._id);
+                if (!existingJob.durableMode) processTranslationJob(existingJob._id);
                 return res.json({ message: "Job resumed", jobId: existingJob._id });
             }
 
@@ -1654,12 +1659,13 @@ module.exports = function(app, verifyToken, verifyAdmin) {
                 targetChapters,
                 totalToTranslate: targetChapters.length,
                 apiKeys: legacyKeys, // keep for backward compatibility, but actual translation will use providers
+                durableMode: process.env.DURABLE_SMART_TRANSLATION === 'true',
                 logs: [{ message: `تم بدء المهمة (استهداف ${targetChapters.length} فصل)`, type: 'info' }]
             });
 
             await job.save();
 
-            processTranslationJob(job._id);
+            if (!job.durableMode) processTranslationJob(job._id);
 
             res.json({ message: "Job started", jobId: job._id });
         } catch (e) {
@@ -1899,3 +1905,6 @@ module.exports._ai = {
     DEEPSEEK_CHAPTERS_PER_CONVERSATION,
     DEEPSEEK_MAX_ATTEMPTS_PER_TOKEN,
 };
+
+// Synchronous, one-chapter execution for opt-in durable jobs on Vercel.
+module.exports.processTranslationJob = processTranslationJob;
