@@ -21,6 +21,13 @@ const pureTranslationJobSchema = new mongoose.Schema({
     translatedCount: { type: Number, default: 0 },
     // ⏱️ الفاصل بين كل فصل والذي يليه (بالملي ثانية) — يُضبط من الواجهة ويُقرأ حياً كل فصل
     chapterDelayMs: { type: Number, default: 2000 },
+    // Opt-in checkpointed mode for ephemeral Vercel execution; legacy mode unchanged.
+    durableMode: { type: Boolean, default: false },
+    leaseToken: { type: String, default: '' },
+    leaseUntil: { type: Date, default: () => new Date(0) },
+    nextRunAt: { type: Date, default: Date.now },
+    attempts: { type: Number, default: 0 },
+    lastError: { type: String, default: '' },
     logs: [{
         message: String,
         type: { type: String, enum: ['info', 'success', 'error', 'warning'] },
