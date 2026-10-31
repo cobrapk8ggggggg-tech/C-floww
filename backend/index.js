@@ -17,7 +17,7 @@ try {
     console.warn('⚠️  Could not find .env file. Using platform environment variables instead.');
 }
 
-console.log('MONGODB_URI used:', process.env.MONGODB_URI ? process.env.MONGODB_URI.replace(/:[^:@]+@/, ':****@') : 'undefined');
+console.log('MongoDB connection configured:', Boolean(process.env.MONGODB_URI));
 
 const express = require('express');
 const cors = require('cors');
@@ -49,6 +49,8 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 // Lightweight staging health: does not require any database access.
 app.get('/api/automation/health', (_req, res) => res.json({
     service: 'zeus-cfloww', status: 'ok', databaseConfigured: Boolean(process.env.MONGODB_URI),
+    databaseConnected: mongoose.connection.readyState === 1,
+    databaseIsolated: Boolean(configuredStagingDb),
     automationConfigured: Boolean(process.env.AUTOMATION_SECRET && process.env.SCRAPER_SERVICE_URL)
 }));
 
@@ -57,6 +59,14 @@ let cachedDb = null;
 let connectionAttempts = 0;
 const MAX_RETRIES = 10;
 const RETRY_DELAY_MS = 7000;
+// A preview of this branch can reuse the original Atlas credential while
+// *always* selecting a separate database; production's database is unchanged.
+const configuredStagingDb = process.env.AUTOMATION_DB_NAME || (
+    process.env.VERCEL_ENV === 'preview' ? 'zeus_automation_staging' : ''
+);
+if (configuredStagingDb && !/^[A-Za-z0-9_-]{3,64}$/.test(configuredStagingDb)) {
+    throw new Error('Invalid AUTOMATION_DB_NAME');
+}
 
 async function connectToDatabase(retry = true) {
     if (!process.env.MONGODB_URI) return null;
@@ -64,6 +74,7 @@ async function connectToDatabase(retry = true) {
     try {
         const db = await mongoose.connect(process.env.MONGODB_URI, {
             serverSelectionTimeoutMS: 5000,
+            ...(configuredStagingDb ? { dbName: configuredStagingDb } : {}),
         });
         cachedDb = db;
         connectionAttempts = 0;
