@@ -134,6 +134,8 @@ require('./routes/authRoutes')(app, verifyToken);
 
 // تحميل مسارات الإدارة
 require('./routes/adminRoutes')(app, verifyToken, verifyAdmin, upload);
+// Bounded chapter jobs: opt-in, with MongoDB checkpoints and Cloudflare cron.
+require('./routes/automationRoutes')(app, verifyAdmin);
 
 // 🔥 تحميل مسارات المترجم الذكي
 require('./routes/translatorRoutes')(app, verifyToken, verifyAdmin);
