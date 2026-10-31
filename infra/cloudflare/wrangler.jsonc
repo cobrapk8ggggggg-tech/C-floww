@@ -1,0 +1,15 @@
+{
+  "name": "zeus-automation-coordinator",
+  "main": "index.js",
+  "compatibility_date": "2026-10-31",
+  "triggers": {
+    "crons": ["*/2 * * * *"]
+  },
+  "vars": {
+    "AUTOMATION_ENABLED": "false",
+    "BACKEND_URL": "https://c-flow-backend.vercel.app"
+  },
+  "observability": {
+    "enabled": true
+  }
+}
