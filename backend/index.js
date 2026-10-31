@@ -46,6 +46,12 @@ app.use(cors({
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
+// Lightweight staging health: does not require any database access.
+app.get('/api/automation/health', (_req, res) => res.json({
+    service: 'zeus-cfloww', status: 'ok', databaseConfigured: Boolean(process.env.MONGODB_URI),
+    automationConfigured: Boolean(process.env.AUTOMATION_SECRET && process.env.SCRAPER_SERVICE_URL)
+}));
+
 // Database Connection with retry logic (no crash on failure)
 let cachedDb = null;
 let connectionAttempts = 0;
@@ -53,6 +59,7 @@ const MAX_RETRIES = 10;
 const RETRY_DELAY_MS = 7000;
 
 async function connectToDatabase(retry = true) {
+    if (!process.env.MONGODB_URI) return null;
     if (cachedDb) return cachedDb;
     try {
         const db = await mongoose.connect(process.env.MONGODB_URI, {
@@ -87,6 +94,7 @@ connectToDatabase(true).catch(err => {
 
 // Middleware to ensure DB is connected (or at least attempted)
 app.use(async (req, res, next) => {
+    if (!process.env.MONGODB_URI) return res.status(503).json({error:'Database not configured'});
     if (!cachedDb) {
         // محاولة الاتصال مرة أخرى إذا لم يكن هناك اتصال بعد
         await connectToDatabase(true);
