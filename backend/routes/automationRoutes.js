@@ -121,5 +121,52 @@ module.exports = function addAutomationRoutes(app, verifyAdmin) {
       return res.json({ok:false,jobId:job.id,chapterNumber:chapter,attempts:tries,retry:!permanent});
     }
   });
+
+  // Opt-in durable pure translation: one real chapter per request.
+  // Does not change legacy translator or glossary routes.
+  app.post('/api/automation/worker/translate-tick',async(req,res)=>{
+    if(!validCoordinatorSecret(req))return res.status(401).json({error:'Unauthorized'});
+    if(process.env.DURABLE_PURE_TRANSLATION!=='true')
+      return res.json({ok:true,disabled:true});
+    const PureTranslationJob=require('../models/pureTranslationJob.model');
+    const {processPureTranslationJob}=require('./pureTranslatorRoutes');
+    const now=new Date(),token=crypto.randomUUID();
+    const job=await PureTranslationJob.findOneAndUpdate({
+      durableMode:true,status:'active',
+      targetChapters:{$exists:true,$ne:[]},
+      nextRunAt:{$lte:now},
+      leaseUntil:{$lte:now}
+    },{$set:{leaseToken:token,leaseUntil:new Date(Date.now()+360000)}},
+      {sort:{createdAt:1},new:true});
+    if(!job)return res.json({ok:true,idle:true});
+    try {
+      await processPureTranslationJob(job._id,{oneChapter:true});
+    } catch(e) {
+      console.error('Durable pure translation step error',e.message);
+    }
+    // Source worker owns chapter persistence and $pull from targetChapters.
+    // Compare remaining chapters, not an in-memory success flag.
+    const fresh=await PureTranslationJob.findById(job._id);
+    if(!fresh)return res.status(500).json({ok:false,error:'Job disappeared'});
+    if(fresh.leaseToken!==token)return res.json({ok:false,stale:true});
+    if(fresh.status==='paused') {
+      await PureTranslationJob.updateOne({_id:job._id,leaseToken:token},
+        {$set:{leaseToken:'',leaseUntil:new Date(0)}});
+      return res.json({ok:true,paused:true});
+    }
+    const before=(job.targetChapters||[]).length;
+    const remaining=(fresh.targetChapters||[]).length;
+    const progressed=remaining<before;
+    const attempts=progressed?0:Math.min((fresh.attempts||0)+1,100);
+    const seconds=progressed?0:Math.min(3600,Math.round(30*Math.pow(2,Math.min(attempts,7))));
+    await PureTranslationJob.updateOne({_id:job._id,leaseToken:token},{$set:{
+      leaseToken:'',leaseUntil:new Date(0),attempts,
+      lastError:progressed?'':('No durable chapter progress after attempt '+attempts),
+      nextRunAt:new Date(Date.now()+seconds*1000),
+      status:remaining===0?'completed':'active'
+    }});
+    return res.json({ok:true,jobId:job.id,progressed,remaining,retryInSeconds:seconds});
+  });
+
 };
 module.exports.__test = {chapterNumbers,sourceUrl,validCoordinatorSecret};
