@@ -3,7 +3,6 @@ const crypto = require('node:crypto');
 const AutomationJob = require('../models/automationJob.model');
 
 const MAX_CHAPTERS = 2000;
-const MAX_ATTEMPTS = 5;
 const STEP_TIMEOUT_MS = 90_000;
 const LEASE_MS = 150_000;
 const RETRY_DELAYS = [30_000,120_000,300_000,900_000,1_800_000];
@@ -111,11 +110,12 @@ module.exports = function addAutomationRoutes(app, verifyAdmin) {
       });
       return res.json({ok:changed.modifiedCount===1,jobId:job.id,chapterNumber:chapter,completed:finished});
     } catch(e) {
-      const tries=job.attempts+1,permanent=tries>=MAX_ATTEMPTS;
+      const tries=Math.min(job.attempts+1,100);
+      const permanent=/^Scraper (401|403|422):/.test(String(e.message||''));
       await AutomationJob.updateOne(filter,{$set:{
         attempts:tries,status:permanent?'failed':'queued',
         lastError:String(e.message||e).slice(0,500),
-        nextRunAt:new Date(Date.now()+RETRY_DELAYS[Math.min(tries-1,RETRY_DELAYS.length-1)]),
+        nextRunAt:new Date(Date.now()+Math.min(6*3600000,RETRY_DELAYS[Math.min(tries-1,RETRY_DELAYS.length-1)]*Math.max(1,Math.floor(tries/5)))),
         leaseToken:'',leaseUntil:new Date(0)
       }});
       return res.json({ok:false,jobId:job.id,chapterNumber:chapter,attempts:tries,retry:!permanent});
