@@ -11,6 +11,13 @@ const translationJobSchema = new mongoose.Schema({
     totalToTranslate: { type: Number, default: 0 },
     translatedCount: { type: Number, default: 0 },
     apiKeys: [String], // قائمة المفاتيح المستخدمة لهذه المهمة
+    // Durable smart translator is opt-in; legacy jobs retain old behavior.
+    durableMode: { type: Boolean, default: false },
+    leaseToken: { type: String, default: '' },
+    leaseUntil: { type: Date, default: () => new Date(0) },
+    nextRunAt: { type: Date, default: Date.now },
+    attempts: { type: Number, default: 0 },
+    lastError: { type: String, default: '' },
     logs: [{ 
         message: String, 
         type: { type: String, enum: ['info', 'success', 'error', 'warning'] },
