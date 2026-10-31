@@ -31,4 +31,4 @@ jobs:
       - run: node --check backend/routes/translatorRoutes.js
       - run: node --check backend/routes/pureTranslatorRoutes.js
       - run: node --check backend/index.js
-      - run: node --test tests/automation-foundation.test.js tests/automation-integration.test.js tests/automation-import.test.js tests/automation-isolation.test.js tests/cloudflare-worker.test.js tests/automation-300chapters.test.js
+      - run: node --test tests/automation-foundation.test.js tests/automation-integration.test.js tests/automation-import.test.js tests/automation-isolation.test.js tests/automation-database-connection.test.js tests/cloudflare-worker.test.js tests/automation-300chapters.test.js

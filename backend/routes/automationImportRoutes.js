@@ -46,7 +46,9 @@ module.exports = function mount(app, deps = {}) {
         !chapter.content.trim() || Buffer.byteLength(chapter.content)>900_000 ||
         typeof chapter.title!=='string' || !chapter.title.trim())return res.sendStatus(400);
       // Do not match by title: different novels/sources may have identical titles.
-      const novelId=hash('automation-novel\n'+source).slice(0,24);
+      const candidates=await Novel.find({sourceUrl:source}).select('_id').limit(2);
+      if(candidates.length>1)throw new Error('Ambiguous existing source identity');
+      const novelId=candidates[0]?._id || hash('automation-novel\n'+source).slice(0,24);
       await Novel.updateOne({_id:novelId},{$setOnInsert:{title:novelData.title,
         titleEn:novelData.title,author:'System Scraper',authorEmail:'system@scraper',
         description:novelData.description || '',status:'خاصة',sourceUrl:source,
@@ -59,6 +61,7 @@ module.exports = function mount(app, deps = {}) {
           {upsert:true,runValidators:true});
       } catch(e) {if(e.code!==11000)throw e;}
       const r=await Receipt.findById(id);
+      if(!r || hash(r.content)!==r.contentHash)throw new Error('Invalid original checkpoint');
       const ref=refFor(r);
       await firestore.runTransaction(async tx=>{
         const snap=await tx.get(ref);

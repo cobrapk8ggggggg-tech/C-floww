@@ -66,6 +66,15 @@ test('durable import survives partial writes, duplicates, private novels and cor
     input.sourceUrl='https://novelfire.net/different';
     assert.equal((await send('import',input)).body.persisted,true);
     assert.equal(await Novel.countDocuments(),2);
+    const legacy=await Novel.create({title:'Existing private source',author:'Owner',status:'خاصة',
+      sourceUrl:'https://novelfire.net/existing',chapters:[]});
+    input.sourceUrl=legacy.sourceUrl;
+    const adopted=await send('import',input);
+    assert.equal(adopted.body.novelId,String(legacy._id));
+    assert.equal(await Novel.countDocuments(),3);
+    await Novel.create({title:'Ambiguous duplicate',author:'Owner',sourceUrl:legacy.sourceUrl});
+    assert.equal((await send('import',input)).status,503);
+
   } finally {
     if(server)await new Promise(r=>server.close(r));
     await mongoose.connection.dropDatabase();await mongoose.disconnect();

@@ -46,68 +46,31 @@ app.use(cors({
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Lightweight staging health: does not require any database access.
-app.get('/api/automation/health', (_req, res) => res.json({
+// Bounded health probe: configuration alone is not database readiness.
+app.get('/api/automation/health', async (_req, res) => {
+  try { await connectToDatabase(); } catch {}
+  return res.json({
     service: 'zeus-cfloww', status: 'ok', databaseConfigured: Boolean(process.env.MONGODB_URI),
     databaseConnected: mongoose.connection.readyState === 1,
     databaseIsolated: mongoose.connection.readyState === 1 && mongoose.connection.name === configuredStagingDb,
     firestoreConfigured: Boolean(require('./config/firebaseAdmin').db),
     firestoreDatabase: require('./config/automationIsolation').firestoreDatabase(),
     automationConfigured: Boolean(process.env.AUTOMATION_SECRET && process.env.SCRAPER_SERVICE_URL)
-}));
-
-// Database Connection with retry logic (no crash on failure)
-let cachedDb = null;
-let connectionAttempts = 0;
-const MAX_RETRIES = 10;
-const RETRY_DELAY_MS = 7000;
-// A preview of this branch can reuse the original Atlas credential while
-// *always* selecting a separate database; production's database is unchanged.
-const configuredStagingDb = require('./config/automationIsolation').mongoDatabase();
-
-async function connectToDatabase(retry = true) {
-    if (!process.env.MONGODB_URI) return null;
-    if (cachedDb) return cachedDb;
-    try {
-        const db = await mongoose.connect(process.env.MONGODB_URI, {
-            serverSelectionTimeoutMS: 5000,
-            ...(configuredStagingDb ? { dbName: configuredStagingDb } : {}),
-        });
-        cachedDb = db;
-        connectionAttempts = 0;
-        console.log("✅ Connected to MongoDB Atlas");
-        return db;
-    } catch (error) {
-        console.error("❌ MongoDB connection error:", error.message);
-        if (retry && connectionAttempts < MAX_RETRIES) {
-            connectionAttempts++;
-            console.log(`🔄 Retrying connection (${connectionAttempts}/${MAX_RETRIES}) in ${RETRY_DELAY_MS/1000} seconds...`);
-            await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
-            return connectToDatabase(true);
-        } else if (retry && connectionAttempts >= MAX_RETRIES) {
-            console.error(`❌ CRITICAL: Could not connect to MongoDB after ${MAX_RETRIES} attempts. Server will continue but database features will fail.`);
-            // لا نرمي الخطأ، نستمر بدون قاعدة بيانات
-            return null;
-        } else {
-            throw error; // فقط إذا retry=false (لم نستخدمها حالياً)
-        }
-    }
-}
-
-// Start connection in background without blocking server startup
-connectToDatabase(true).catch(err => {
-    // Already handled inside function, but for safety:
-    console.error("Unhandled MongoDB connection failure:", err.message);
+});
 });
 
-// Middleware to ensure DB is connected (or at least attempted)
-app.use(async (req, res, next) => {
-    if (!process.env.MONGODB_URI) return res.status(503).json({error:'Database not configured'});
-    if (!cachedDb) {
-        // محاولة الاتصال مرة أخرى إذا لم يكن هناك اتصال بعد
-        await connectToDatabase(true);
+// Await bounded connection attempts inside requests; no background retry loop.
+const configuredStagingDb = require('./config/automationIsolation').mongoDatabase();
+const connectToDatabase = require('./services/databaseConnection.service')(mongoose, {
+    uri: process.env.MONGODB_URI, dbName: configuredStagingDb
+});
+app.use(async (_req, res, next) => {
+    try {
+        if (!await connectToDatabase()) return res.status(503).json({error:'Database not configured'});
+        next();
+    } catch {
+        return res.status(503).json({error:'Database temporarily unavailable'});
     }
-    next();
 });
 
 // =========================================================

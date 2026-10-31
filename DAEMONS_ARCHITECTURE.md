@@ -42,3 +42,11 @@ The separate deployment `zeus-cfloww-staging.vercel.app` still has no MongoDB UR
 - Phase E: implement Dockerized direct pull worker and GitHub Actions overflow; enable Daemon **only** if Functions prove insufficient, with idle scale-to-zero automation and quota guard.
 
 **No production deployment/promotion or background worker activation without passing the relevant tests.**
+
+
+## Review update — 2026-10-31
+
+Current official documentation was retrieved again: https://vercel.com/docs/daemons/managing-daemons and https://vercel.com/docs/daemons/config-reference.
+Daemons target production, with explicit instance counts; an empty `instances` map stops instances. This is a management action, not evidence of automatic idle autoscaling. No daemon configuration was deployed, and the account's actual remaining quota was not inspected. The earlier inclusion figures above are not a verified account allowance or a cost commitment.
+
+For this workload compare measured function CPU + provisioned-memory duration + invocations with daemon CPU + memory multiplied by running wall time (including idle), plus AI usage. Queue delivery typically costs three operations per message before retries (write/read/delete); a three-kind Cron every two minutes creates 2160 wakeups/day, about 6480 operations before any chapter chaining. See https://developers.cloudflare.com/queues/platform/pricing/ for current plan-specific allowance. These are operation estimates, not observed account usage. GitHub Actions consumes runner minutes; it is not a permanent worker. No platform should be selected on a fabricated real-chapter benchmark.
