@@ -35,7 +35,7 @@ test('MongoDB durable scraping: retry, checkpoints, leases, pause/resume', {skip
       assert.equal(req.headers.authorization,process.env.SCRAPER_API_SECRET);
       const chapter = JSON.parse(raw).chapterNumber;
       res.setHeader('content-type','application/json');
-      if(requests===1){res.statusCode=503;res.end(JSON.stringify({error:'transient'}));}
+      if(requests===1 || chapter===99){res.statusCode=503;res.end(JSON.stringify({error:'transient'}));}
       else res.end(JSON.stringify({ok:true,status:'saved',chapterNumber:chapter}));
     });
   });
@@ -100,6 +100,18 @@ test('MongoDB durable scraping: retry, checkpoints, leases, pause/resume', {skip
     assert.equal(job.cursor,3);
     assert.equal((await tick()).json.idle,true);
     assert.equal(requests,4);
+    // A long external outage must NOT irreversibly fail a 300-chapter job.
+    const broken=await send('/api/automation/jobs',{sourceUrl:'https://novelfire.net/outage',chapters:[99]});
+    assert.equal(broken.status,201);
+    for(let n=1;n<=7;n++){
+      const retry=await tick();
+      assert.equal(retry.json.retry,true);
+      const saved=await AutomationJob.findById(broken.json.id);
+      assert.equal(saved.status,'queued');
+      assert.equal(saved.cursor,0);
+      assert.equal(saved.attempts,n);
+      await AutomationJob.updateOne({_id:saved._id},{$set:{nextRunAt:new Date(0)}});
+    }
   } finally {
     if(backend) await close(backend);
     await close(scraper);
