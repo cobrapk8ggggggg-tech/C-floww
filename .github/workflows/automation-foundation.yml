@@ -1,0 +1,19 @@
+name: Durable chapter automation foundation
+on:
+  push:
+    branches: ['feature/cloudflare-vercel-durable-jobs-foundation']
+  pull_request:
+jobs:
+  backend-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci --prefix backend
+      - run: node --check backend/routes/automationRoutes.js
+      - run: node --check backend/index.js
+      - run: node --test tests/automation-foundation.test.js
