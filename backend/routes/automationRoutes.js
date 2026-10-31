@@ -168,5 +168,43 @@ module.exports = function addAutomationRoutes(app, verifyAdmin) {
     return res.json({ok:true,jobId:job.id,progressed,remaining,retryInSeconds:seconds});
   });
 
+
+  // Existing smart translator (translation + glossary extraction), one chapter per cron.
+  app.post('/api/automation/worker/smart-translate-tick',async(req,res)=>{
+    if(!validCoordinatorSecret(req))return res.status(401).json({error:'Unauthorized'});
+    if(process.env.DURABLE_SMART_TRANSLATION!=='true')
+      return res.json({ok:true,disabled:true});
+    const TranslationJob=require('../models/translationJob.model');
+    const {processTranslationJob}=require('./translatorRoutes');
+    const token=crypto.randomUUID(),now=new Date();
+    const job=await TranslationJob.findOneAndUpdate({
+      durableMode:true,status:'active',targetChapters:{$exists:true,$ne:[]},
+      nextRunAt:{$lte:now},leaseUntil:{$lte:now}
+    },{$set:{leaseToken:token,leaseUntil:new Date(Date.now()+360000)}},
+      {sort:{createdAt:1},new:true});
+    if(!job)return res.json({ok:true,idle:true});
+    try {await processTranslationJob(job._id,{oneChapter:true});}
+    catch(e){console.error('Durable smart step error',e.message);}
+    const fresh=await TranslationJob.findById(job._id);
+    if(!fresh)return res.status(500).json({ok:false,error:'Job disappeared'});
+    if(fresh.leaseToken!==token)return res.json({ok:false,stale:true});
+    if(fresh.status==='paused'){
+      await TranslationJob.updateOne({_id:job._id,leaseToken:token},
+        {$set:{leaseToken:'',leaseUntil:new Date(0)}});
+      return res.json({ok:true,paused:true});
+    }
+    const before=(job.targetChapters||[]).length,remaining=(fresh.targetChapters||[]).length;
+    const progressed=remaining<before;
+    const attempts=progressed?0:Math.min((fresh.attempts||0)+1,100);
+    const seconds=progressed?0:Math.min(3600,Math.round(30*Math.pow(2,Math.min(attempts,7))));
+    await TranslationJob.updateOne({_id:job._id,leaseToken:token},{$set:{
+      leaseToken:'',leaseUntil:new Date(0),attempts,
+      lastError:progressed?'':'No chapter completed on attempt '+attempts,
+      nextRunAt:new Date(Date.now()+seconds*1000),
+      status:remaining===0?'completed':'active'
+    }});
+    return res.json({ok:true,jobId:job.id,progressed,remaining,retryInSeconds:seconds});
+  });
+
 };
 module.exports.__test = {chapterNumbers,sourceUrl,validCoordinatorSecret};
