@@ -1,19 +1,23 @@
 // Cloudflare Cron coordinator for ZEUS. Disabled by default.
-const BACKEND='https://c-flow-backend.vercel.app';
-const SCRAPER='https://zeus-novel-scraper.vercel.app';
+const BACKEND='https://zeus-cfloww-staging.vercel.app';
+const SCRAPER='https://zeus-scraper-staging.vercel.app';
 
 async function tick(env) {
   if (env.AUTOMATION_ENABLED !== 'true') return {disabled:true};
   if (!env.AUTOMATION_SECRET || !env.BACKEND_URL) throw new Error('Missing coordinator configuration');
-  const url = new URL('/api/automation/worker/tick',env.BACKEND_URL);
-  if (url.protocol !== 'https:') throw new Error('HTTPS backend required');
-  const response = await fetch(url,{
-    method:'POST',
-    headers:{'x-automation-secret':env.AUTOMATION_SECRET},
-    signal:AbortSignal.timeout(115000)
-  });
-  if (!response.ok) throw new Error('Backend tick failed: '+response.status);
-  return response.json();
+  const base = new URL(env.BACKEND_URL);
+  if (base.protocol !== 'https:') throw new Error('HTTPS backend required');
+  const paths=['/api/automation/worker/tick','/api/automation/worker/translate-tick'];
+  return Promise.all(paths.map(async path=>{
+    const url=new URL(path,base);
+    const response=await fetch(url,{
+      method:'POST',
+      headers:{'x-automation-secret':env.AUTOMATION_SECRET},
+      signal:AbortSignal.timeout(115000)
+    });
+    if(!response.ok) throw new Error('Backend '+path+' failed: '+response.status);
+    return {path,result:await response.json()};
+  }));
 }
 
 export default {
