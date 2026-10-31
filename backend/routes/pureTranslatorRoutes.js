@@ -77,7 +77,7 @@ async function pushLog(jobId, message, type) {
 // ⚡ عامل الترجمة الخالصة — نفس دورة عامل المترجم الذكي حرفياً
 //    (مزوّدات/مفاتيح/تحقق/مراجعة/إصلاح/Qwen) — بلا أي استخراج مصطلحات
 // =========================================================
-async function processPureTranslationJob(jobId) {
+async function processPureTranslationJob(jobId, options = {}) {
     try {
         const job = await PureTranslationJob.findById(jobId);
         if (!job || job.status !== 'active') return;
@@ -130,7 +130,7 @@ async function processPureTranslationJob(jobId) {
         // ⚡ لا يوجد extractPrompt هنا إطلاقاً: المترجم الخالص لا يستخرج مصطلحات.
         const transPrompt = settings?.customPrompt || "You are a professional translator. Translate the novel chapter into Arabic. The source may be in ANY language (English, Chinese, Korean, Japanese, Russian, etc.) — translate ALL of it into Arabic with no exceptions. Output ONLY the Arabic translation. Use the glossary provided.";
 
-        const chaptersToProcess = (job.targetChapters || []).slice().sort((a, b) => a - b);
+        const chaptersToProcess = (job.targetChapters || []).slice().sort((a, b) => a - b).slice(0, options.oneChapter ? 1 : undefined);
         const conversationContexts = { chapters: new Map(), chapter_review: new Map() };
         let stickySuccessRoute = null;
 
@@ -563,8 +563,10 @@ ${sourceContent}
             }
 
             // ⏱️ الفاصل بين الفصول — يُقرأ حياً من المهمة حتى يسري تغييره من الواجهة فوراً
-            const postJob = await PureTranslationJob.findById(jobId).select('chapterDelayMs');
-            await delay(Math.max(0, Math.min(3600000, postJob?.chapterDelayMs ?? 2000)));
+            if (!options.oneChapter) {
+                const postJob = await PureTranslationJob.findById(jobId).select('chapterDelayMs');
+                await delay(Math.max(0, Math.min(3600000, postJob?.chapterDelayMs ?? 2000)));
+            }
         }
 
         // النهاية: إن لم تبق فصول مستهدفة والمهمة لا تزال نشطة → مكتملة
@@ -647,7 +649,7 @@ module.exports = function (app, verifyToken, verifyAdmin) {
                 existingJob.status = 'active';
                 existingJob.logs.push({ message: '▶️ تم استئناف مهمة الترجمة الخالصة' + (delayMs !== null ? ` | ⏱️ الفاصل: ${delayMs / 1000} ثانية` : ''), type: 'info' });
                 await existingJob.save();
-                processPureTranslationJob(existingJob._id);
+                if (!existingJob.durableMode) processPureTranslationJob(existingJob._id);
                 return res.json({ message: "Job resumed", jobId: existingJob._id });
             }
 
@@ -698,10 +700,11 @@ module.exports = function (app, verifyToken, verifyAdmin) {
                 targetChapters,
                 totalToTranslate: targetChapters.length,
                 chapterDelayMs: effectiveDelayMs,
+                durableMode: process.env.DURABLE_PURE_TRANSLATION === 'true',
                 logs: [{ message: `تم بدء الترجمة الخالصة لـ«${novel.title}» (استهداف ${targetChapters.length} فصلاً — ترجمة فقط بلا استخراج مصطلحات، بالمسرد الجاهز) | ⏱️ الفاصل بين الفصول: ${effectiveDelayMs / 1000} ثانية`, type: 'info' }]
             });
             await job.save();
-            processPureTranslationJob(job._id);
+            if (!job.durableMode) processPureTranslationJob(job._id);
             res.json({ message: "Pure translation started", jobId: job._id });
         } catch (e) {
             res.status(500).json({ error: e.message });
@@ -794,3 +797,6 @@ module.exports = function (app, verifyToken, verifyAdmin) {
         }
     });
 };
+
+// Used by the Cloudflare-triggered, opt-in one-chapter automation worker.
+module.exports.processPureTranslationJob = processPureTranslationJob;
