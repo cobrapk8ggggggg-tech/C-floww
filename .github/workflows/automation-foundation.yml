@@ -6,6 +6,18 @@ on:
 jobs:
   backend-validation:
     runs-on: ubuntu-latest
+    services:
+      mongodb:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd="mongosh --quiet --eval 'db.adminCommand({ ping: 1 })'"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=15
+    env:
+      AUTOMATION_TEST_MONGO_URI: mongodb://127.0.0.1:27017
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -16,4 +28,4 @@ jobs:
       - run: npm ci --prefix backend
       - run: node --check backend/routes/automationRoutes.js
       - run: node --check backend/index.js
-      - run: node --test tests/automation-foundation.test.js
+      - run: node --test tests/automation-foundation.test.js tests/automation-integration.test.js
