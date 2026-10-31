@@ -27,7 +27,8 @@ jobs:
           cache-dependency-path: backend/package-lock.json
       - run: npm ci --prefix backend
       - run: node --check backend/routes/automationRoutes.js
+      - run: node --input-type=module --check < infra/cloudflare/index.js
       - run: node --check backend/routes/translatorRoutes.js
       - run: node --check backend/routes/pureTranslatorRoutes.js
       - run: node --check backend/index.js
-      - run: node --test tests/automation-foundation.test.js tests/automation-integration.test.js
+      - run: node --test tests/automation-foundation.test.js tests/automation-integration.test.js tests/cloudflare-worker.test.js
