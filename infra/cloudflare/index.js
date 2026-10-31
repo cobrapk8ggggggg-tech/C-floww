@@ -7,13 +7,13 @@ async function tick(env) {
   if (!env.AUTOMATION_SECRET || !env.BACKEND_URL) throw new Error('Missing coordinator configuration');
   const base = new URL(env.BACKEND_URL);
   if (base.protocol !== 'https:') throw new Error('HTTPS backend required');
-  const paths=['/api/automation/worker/tick','/api/automation/worker/translate-tick'];
+  const paths=['/api/automation/worker/tick','/api/automation/worker/translate-tick','/api/automation/worker/smart-translate-tick'];
   return Promise.all(paths.map(async path=>{
     const url=new URL(path,base);
     const response=await fetch(url,{
       method:'POST',
       headers:{'x-automation-secret':env.AUTOMATION_SECRET},
-      signal:AbortSignal.timeout(115000)
+      signal:AbortSignal.timeout(270000)
     });
     if(!response.ok) throw new Error('Backend '+path+' failed: '+response.status);
     return {path,result:await response.json()};
@@ -30,11 +30,14 @@ export default {
     if (pathname === '/check') {
       try {
         const [backend,scraper] = await Promise.all([
-          fetch(BACKEND+'/api/novels',{signal:AbortSignal.timeout(12000)}),
+          fetch(BACKEND+'/api/automation/health',{signal:AbortSignal.timeout(12000)}),
           fetch(SCRAPER+'/health',{signal:AbortSignal.timeout(12000)})
         ]);
-        return Response.json({service:'zeus-automation-coordinator',backend:backend.status,scraper:scraper.status},
-          {status:backend.ok&&scraper.ok?200:502});
+        const state=await backend.json().catch(()=>({}));
+        const ready=backend.ok&&scraper.ok&&state.databaseConfigured===true;
+        return Response.json({service:'zeus-automation-coordinator',backend:backend.status,
+          scraper:scraper.status,databaseConfigured:state.databaseConfigured===true,ready},
+          {status:ready?200:503});
       } catch {
         return Response.json({healthy:false},{status:502});
       }
