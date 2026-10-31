@@ -3,7 +3,9 @@
   "main": "index.js",
   "compatibility_date": "2026-10-31",
   "triggers": {
-    "crons": ["*/2 * * * *"]
+    "crons": [
+      "*/2 * * * *"
+    ]
   },
   "vars": {
     "AUTOMATION_ENABLED": "false",
@@ -11,5 +13,23 @@
   },
   "observability": {
     "enabled": true
+  },
+  "queues": {
+    "producers": [
+      {
+        "binding": "AUTOMATION_QUEUE",
+        "queue": "zeus-chapter-automation"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "zeus-chapter-automation",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 8,
+        "max_concurrency": 3,
+        "retry_delay": 60
+      }
+    ]
   }
 }
