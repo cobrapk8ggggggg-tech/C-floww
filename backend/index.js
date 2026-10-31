@@ -61,9 +61,7 @@ const MAX_RETRIES = 10;
 const RETRY_DELAY_MS = 7000;
 // A preview of this branch can reuse the original Atlas credential while
 // *always* selecting a separate database; production's database is unchanged.
-const configuredStagingDb = process.env.AUTOMATION_DB_NAME || (
-    process.env.VERCEL_ENV === 'preview' ? 'zeus_automation_staging' : ''
-);
+const configuredStagingDb = process.env.AUTOMATION_DB_NAME || 'zeus_automation_staging';
 if (configuredStagingDb && !/^[A-Za-z0-9_-]{3,64}$/.test(configuredStagingDb)) {
     throw new Error('Invalid AUTOMATION_DB_NAME');
 }
