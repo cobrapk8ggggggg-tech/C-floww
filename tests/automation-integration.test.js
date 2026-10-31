@@ -27,16 +27,20 @@ test('MongoDB durable scraping: retry, checkpoints, leases, pause/resume', {skip
   process.env.AUTOMATION_SECRET=secret;
   process.env.SCRAPER_API_SECRET='unit-test-scraper-secret-not-for-production';
   let requests = 0;
+  let release, entered;
+  const waiting=new Promise(r=>entered=r);
+  const gate=new Promise(r=>release=r);
   const scraper=http.createServer((req,res)=>{
     requests++;
     let raw='';
     req.on('data',b=>raw+=b);
-    req.on('end',()=>{
+    req.on('end',async()=>{
       assert.equal(req.headers.authorization,process.env.SCRAPER_API_SECRET);
       const chapter = JSON.parse(raw).chapterNumber;
+      if(chapter===77){entered();await gate;}
       res.setHeader('content-type','application/json');
       if(requests===1 || chapter===99){res.statusCode=503;res.end(JSON.stringify({error:'transient'}));}
-      else res.end(JSON.stringify({ok:true,status:'saved',chapterNumber:chapter}));
+      else res.end(JSON.stringify({ok:true,status:'saved',receiptId:'test-receipt',chapterNumber:chapter}));
     });
   });
   let backend;
@@ -112,6 +116,23 @@ test('MongoDB durable scraping: retry, checkpoints, leases, pause/resume', {skip
       assert.equal(saved.attempts,n);
       await AutomationJob.updateOne({_id:saved._id},{$set:{nextRunAt:new Date(0)}});
     }
+    await send('/api/automation/jobs/'+broken.json.id+'/pause');
+    const slow=await send('/api/automation/jobs',{sourceUrl:'https://novelfire.net/slow',chapters:[77]});
+    const inFlight=tick();await waiting;
+    const claimed=await AutomationJob.findById(slow.json.id);
+    await send('/api/automation/jobs/'+slow.json.id+'/pause');
+    await send('/api/automation/jobs/'+slow.json.id+'/resume');
+    const held=await AutomationJob.findById(slow.json.id);
+    assert.equal(held.leaseToken,claimed.leaseToken);
+    assert.equal((await tick()).json.idle,true);
+    release();await inFlight;
+    assert.equal((await AutomationJob.findById(slow.json.id)).cursor,0);
+    await AutomationJob.updateOne({_id:slow.json.id},{$set:{leaseUntil:new Date(0)}});
+    assert.equal((await tick()).json.completed,true);
+    const cancelled=await send('/api/automation/jobs',{sourceUrl:'https://novelfire.net/cancel',chapters:[1]});
+    assert.equal((await send('/api/automation/jobs/'+cancelled.json.id+'/cancel')).json.status,'cancelled');
+    assert.equal((await tick()).json.idle,true);
+
   } finally {
     if(backend) await close(backend);
     await close(scraper);

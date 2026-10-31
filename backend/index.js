@@ -50,7 +50,9 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.get('/api/automation/health', (_req, res) => res.json({
     service: 'zeus-cfloww', status: 'ok', databaseConfigured: Boolean(process.env.MONGODB_URI),
     databaseConnected: mongoose.connection.readyState === 1,
-    databaseIsolated: Boolean(configuredStagingDb),
+    databaseIsolated: mongoose.connection.readyState === 1 && mongoose.connection.name === configuredStagingDb,
+    firestoreConfigured: Boolean(require('./config/firebaseAdmin').db),
+    firestoreDatabase: require('./config/automationIsolation').firestoreDatabase(),
     automationConfigured: Boolean(process.env.AUTOMATION_SECRET && process.env.SCRAPER_SERVICE_URL)
 }));
 
@@ -61,10 +63,7 @@ const MAX_RETRIES = 10;
 const RETRY_DELAY_MS = 7000;
 // A preview of this branch can reuse the original Atlas credential while
 // *always* selecting a separate database; production's database is unchanged.
-const configuredStagingDb = process.env.AUTOMATION_DB_NAME || 'zeus_automation_staging';
-if (configuredStagingDb && !/^[A-Za-z0-9_-]{3,64}$/.test(configuredStagingDb)) {
-    throw new Error('Invalid AUTOMATION_DB_NAME');
-}
+const configuredStagingDb = require('./config/automationIsolation').mongoDatabase();
 
 async function connectToDatabase(retry = true) {
     if (!process.env.MONGODB_URI) return null;
@@ -153,6 +152,7 @@ require('./routes/authRoutes')(app, verifyToken);
 require('./routes/adminRoutes')(app, verifyToken, verifyAdmin, upload);
 // Bounded chapter jobs: opt-in, with MongoDB checkpoints and Cloudflare cron.
 require('./routes/automationRoutes')(app, verifyAdmin);
+require('./routes/automationImportRoutes')(app);
 
 // 🔥 تحميل مسارات المترجم الذكي
 require('./routes/translatorRoutes')(app, verifyToken, verifyAdmin);

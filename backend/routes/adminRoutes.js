@@ -1399,6 +1399,8 @@ app.put('/api/admin/novels/:id', verifyAdmin, async (req, res) => {
         
         if (secret !== VALID_SECRET) return res.status(403).json({ message: "Unauthorized" });
 
+        if (!firestore) return res.status(503).json({error:'Firestore unavailable; chapter not saved'});
+
         try {
             const { adminEmail, novelData, chapters, error, skipMetadataUpdate } = req.body;
 

@@ -9,7 +9,7 @@ const schema = new mongoose.Schema({
   chapters: {type:[Number],required:true},
   cursor: {type:Number,default:0,min:0},
   successCount: {type:Number,default:0,min:0},
-  status: {type:String,enum:['queued','running','paused','completed','failed'],default:'queued'},
+  status: {type:String,enum:['queued','running','paused','completed','failed','cancelled'],default:'queued'},
   attempts: {type:Number,default:0,min:0},
   nextRunAt: {type:Date,default:Date.now},
   leaseUntil: {type:Date,default:()=>new Date(0)},

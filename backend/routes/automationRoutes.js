@@ -65,11 +65,12 @@ module.exports = function addAutomationRoutes(app, verifyAdmin) {
   });
   app.post('/api/automation/jobs/:id/:action',verifyAdmin,async(req,res)=>{
     const {id,action} = req.params;
-    if (!/^[a-f\d]{24}$/i.test(id)||!['pause','resume'].includes(action))return res.sendStatus(400);
-    const status = action==='pause'?'paused':'queued';
-    const from = action==='pause'?['queued','running']:['paused','failed'];
+    if (!/^[a-f\d]{24}$/i.test(id)||!['pause','resume','cancel'].includes(action))return res.sendStatus(400);
+    const status = action==='pause'?'paused':action==='cancel'?'cancelled':'queued';
+    const from = action==='resume'?['paused','failed']:['queued','running','paused','failed'];
     const job = await AutomationJob.findOneAndUpdate({_id:id,status:{$in:from}},{
-      $set:{status,nextRunAt:new Date(),leaseUntil:new Date(0),leaseToken:'',attempts:0}
+      // Preserve in-flight lease on pause/resume: its remote request may still be saving.
+      $set:{status,nextRunAt:new Date(),attempts:0}
     },{new:true});
     return job?res.json(publicJob(job)):res.status(409).json({error:'Invalid transition'});
   });
@@ -90,6 +91,10 @@ module.exports = function addAutomationRoutes(app, verifyAdmin) {
     if(!job) return res.json({ok:true,idle:true});
     const chapter = job.chapters[job.cursor], filter={_id:job._id,status:'running',leaseToken:token};
     if(chapter===undefined){
+      if(job.cursor!==job.chapters.length || job.successCount!==job.chapters.length) {
+        await AutomationJob.updateOne(filter,{$set:{status:'failed',lastError:'Inconsistent chapter checkpoint',leaseToken:'',leaseUntil:new Date(0)}});
+        return res.json({ok:false,jobId:job.id,retry:false});
+      }
       await AutomationJob.updateOne(filter,{$set:{status:'completed',finishedAt:new Date(),leaseToken:''}});
       return res.json({ok:true,completed:true,jobId:job.id});
     }
@@ -100,7 +105,7 @@ module.exports = function addAutomationRoutes(app, verifyAdmin) {
         signal:AbortSignal.timeout(STEP_TIMEOUT_MS)
       });
       const body = await response.json().catch(()=>({}));
-      if (!response.ok||body.ok!==true) throw new Error('Scraper '+response.status+': '+String(body.error||'step failed').slice(0,220));
+      if (!response.ok||body.ok!==true || body.chapterNumber!==chapter || !body.receiptId) throw new Error('Scraper '+response.status+': '+String(body.error||'step failed').slice(0,220));
       const next=job.cursor+1,finished=next>=job.chapters.length;
       const changed=await AutomationJob.updateOne(filter,{
         $set:{cursor:next,status:finished?'completed':'queued',lastChapter:chapter,

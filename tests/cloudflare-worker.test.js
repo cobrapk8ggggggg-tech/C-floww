@@ -48,3 +48,30 @@ test('Cloudflare Queue chains a successful authorized step and retries transient
     assert.equal(retried,1);
   }finally{global.fetch=originalFetch}
 });
+
+test('successor send failure retries before acknowledgement; no-progress results stop chaining',async()=>{
+  const worker=await loadWorker(), original=global.fetch;
+  let acked=0,retried=0;
+  const env={AUTOMATION_ENABLED:'true',AUTOMATION_SECRET:'test-only',BACKEND_URL:'https://staging.example',
+    AUTOMATION_QUEUE:{send:async()=>{throw Error('queue unavailable')}}};
+  const batch={messages:[{body:{kind:'scrape'},ack(){acked++},retry(){retried++}}]};
+  try {
+    global.fetch=async()=>({ok:true,json:async()=>({ok:true})});
+    await worker.queue(batch,env);
+    assert.equal(acked,0);assert.equal(retried,1);
+    global.fetch=async()=>({ok:true,json:async()=>({ok:true,progressed:false})});
+    await worker.queue(batch,env);
+    assert.equal(acked,1);assert.equal(retried,1);
+  } finally {global.fetch=original;}
+});
+
+test('readiness checks configured backend and rejects configured but disconnected MongoDB',async()=>{
+  const worker=await loadWorker(), original=global.fetch, urls=[];
+  try {
+    global.fetch=async url=>{urls.push(String(url));return {ok:true,status:200,
+      json:async()=>({databaseConfigured:true,databaseConnected:false,databaseIsolated:true})};};
+    const r=await worker.fetch(new Request('https://worker.example/check'),{BACKEND_URL:'https://custom.example'});
+    assert.equal(r.status,503);
+    assert.equal(urls[0],'https://custom.example/api/automation/health');
+  } finally {global.fetch=original;}
+});

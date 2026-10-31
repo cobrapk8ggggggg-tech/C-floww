@@ -34,7 +34,7 @@ test('300 chapters complete through stateless ticks, temporary failures and a ba
         const count=(seen.get(n)||0)+1;seen.set(n,count);
         res.setHeader('Content-Type','application/json');
         if(n%75===0 && count===1){res.statusCode=503;res.end(JSON.stringify({error:'transient'}));}
-        else {res.end(JSON.stringify({ok:true,status:'saved',chapterNumber:n}));}
+        else {res.end(JSON.stringify({ok:true,status:'saved',receiptId:'test-receipt',chapterNumber:n}));}
       });
     });
     process.env.SCRAPER_SERVICE_URL=await start(scraper);

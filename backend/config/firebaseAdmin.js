@@ -36,7 +36,9 @@ if (serviceAccount) {
       });
       console.log("🔥 Firebase Admin Initialized Successfully");
     }
-    db = admin.firestore();
+    // This development branch must never select the production default database.
+    const databaseId = require('./automationIsolation').firestoreDatabase();
+    db = require('firebase-admin/firestore').getFirestore(admin.app(), databaseId);
   } catch (error) {
     console.error("❌ Firebase Admin Initialization Error:", error.message);
   }

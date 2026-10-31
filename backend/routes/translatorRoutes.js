@@ -1396,7 +1396,9 @@ if (jsonMatch) {
             } catch (err) {
                 console.error("Extraction/Save Error:", err);
                 
-                if (translatedText) {
+                if (options.oneChapter) {
+                    await pushLog(jobId, 'لم تكتمل الترجمة والمصطلحات والحفظ؛ بقي الفصل معلقاً لإعادة المحاولة', 'error');
+                } else if (translatedText) {
                     try {
                         await firestore.collection('novels').doc(freshNovel._id.toString())
                             .collection('chapters').doc(chapterNum.toString())

@@ -34,11 +34,12 @@ export default {
     if(path==='/check'){
       try{
         const [backend,scraper]=await Promise.all([
-          fetch(DEFAULT_BACKEND+'/api/automation/health',{signal:AbortSignal.timeout(12000)}),
-          fetch(DEFAULT_SCRAPER+'/health',{signal:AbortSignal.timeout(12000)})
+          fetch((env.BACKEND_URL || DEFAULT_BACKEND)+'/api/automation/health',{signal:AbortSignal.timeout(12000)}),
+          fetch((env.SCRAPER_URL || DEFAULT_SCRAPER)+'/health',{signal:AbortSignal.timeout(12000)})
         ]);
         const state=await backend.json().catch(()=>({}));
-        const ready=backend.ok&&scraper.ok&&state.databaseConfigured===true;
+        const ready=backend.ok&&scraper.ok&&state.databaseConfigured===true && state.databaseConnected===true &&
+          state.databaseIsolated===true && state.firestoreConfigured===true && state.automationConfigured===true;
         return Response.json({
           service:'zeus-automation-coordinator',backend:backend.status,scraper:scraper.status,
           databaseConfigured:state.databaseConfigured===true,ready
@@ -68,13 +69,13 @@ export default {
       if(!STEPS[kind]){message.ack();continue;}
       try{
         const result=await runStep(env,kind);
-        message.ack();
         // Continue promptly when work was completed. Idle or backoff states
         // pause this chain; the periodic cron acts as a recovery watchdog.
         if(result && !result.idle && !result.disabled && !result.retry &&
-           !result.paused && !result.stale && result.ok!==false) {
+           !result.paused && result.progressed!==false && !result.stale && result.ok!==false) {
           await env.AUTOMATION_QUEUE.send({kind},{delaySeconds:5});
         }
+        message.ack();
       }catch(e){
         console.error('ZEUS queue step failed:',kind,e.message);
         message.retry({delaySeconds:60});

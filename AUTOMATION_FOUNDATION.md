@@ -60,3 +60,14 @@ The free `zeus-chapter-automation` Queue is now provisioned, with
 - The staging MongoDB URI, Firebase credentials and actual AI providers are intentionally **not configured**. Health can return 200 while job endpoints return 503. Do not mistake successful deployment for completed end-to-end processing.
 - Only a synthetic MongoDB + fake scraper integration test runs in GitHub Actions today.
 - Never copy production database passwords or cookies into a public repo or build logs.
+
+## Integrity revision (2026-10-31)
+
+The new synchronous scraper now uses `/api/automation/chapters/check` and
+`/api/automation/chapters/import`, authenticated with the configured existing
+`SCRAPER_API_SECRET`. Deploy backend and scraper together to staging before use;
+there is intentionally no fallback to the legacy success acknowledgement.
+Firestore selects `zeus-automation-staging` (override only with another isolated
+`AUTOMATION_FIRESTORE_DATABASE`). Create/authorize that named database first.
+See `ENGINEERING_AUDIT_AR.md` and `TEST_RESULTS.md` for the current acceptance gates.
+Older implementation descriptions above do not establish live verification.
