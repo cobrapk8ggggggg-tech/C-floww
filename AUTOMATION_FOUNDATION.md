@@ -40,6 +40,19 @@ Development branch only. Existing production C-flow backend and all legacy route
 ## Validation
 See `.github/workflows/automation-foundation.yml`; both validation workflows must pass. No automated production deployment is set up in this branch.
 
+## Cloudflare Queue acceleration
+
+The free `zeus-chapter-automation` Queue is now provisioned, with
+`zeus-automation-coordinator` as the consumer and `AUTOMATION_QUEUE` as the producer binding.
+
+- **Queue message**: `{kind: 'scrape'|'pure'|'smart'}`; contains no chapter text, JWT or API key.
+- **Cron watchdog**: every 2 minutes, submits a wake-up message for each kind only when `AUTOMATION_ENABLED=true`.
+- **Consumer**: calls the respective authenticated C-flow tick, acknowledges a successful HTTP response, and schedules the next message after 5 seconds if work made progress.
+- **Retry behavior**: network errors are retried by Cloudflare after 60 seconds. MongoDB leases and checkpoints remain the authoritative state; queue messages are merely wake-ups. The worker does not dispatch anything while disabled.
+- **Concurrency**: queue consumer capped at three, single-message batches; per-job MongoDB leases are required for safety.
+- **Free usage**: Cloudflare Queues supports a limited free operations allowance; review actual traffic and limits before higher load.
+- **Not yet verified**: 300 live novel chapters, Firebase writes, any actual AI provider, consumer wake-up timing under production load, or permission to fetch from each source.
+
 ## Current isolated staging deployments
 - C-floww: https://zeus-cfloww-staging.vercel.app/api/automation/health
 - Scraper-new: https://zeus-scraper-staging.vercel.app/health
