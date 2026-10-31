@@ -56,6 +56,15 @@ test('MongoDB durable scraping: retry, checkpoints, leases, pause/resume', {skip
     };
     const unauth=await send('/api/automation/worker/tick');
     assert.equal(unauth.status,401);
+    // Durable translation is disabled by default: cannot start AI work accidentally.
+    assert.equal((await send('/api/automation/worker/translate-tick')).status,401);
+    assert.equal((await send('/api/automation/worker/smart-translate-tick')).status,401);
+    const translated=await send('/api/automation/worker/translate-tick',{},
+      {'x-automation-secret':secret});
+    assert.equal(translated.json.disabled,true);
+    const smart=await send('/api/automation/worker/smart-translate-tick',{},
+      {'x-automation-secret':secret});
+    assert.equal(smart.json.disabled,true);
     const create=await send('/api/automation/jobs',{sourceUrl:'https://novelfire.net/test',
       chapters:[3,1,2]});
     assert.equal(create.status,201);
