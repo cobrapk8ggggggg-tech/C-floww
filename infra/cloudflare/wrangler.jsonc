@@ -7,7 +7,7 @@
   },
   "vars": {
     "AUTOMATION_ENABLED": "false",
-    "BACKEND_URL": "https://c-flow-backend.vercel.app"
+    "BACKEND_URL": "https://zeus-cfloww-staging.vercel.app"
   },
   "observability": {
     "enabled": true
