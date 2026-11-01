@@ -69,6 +69,8 @@ const connectToDatabase = require('./services/databaseConnection.service')(mongo
 app.use(async (_req, res, next) => {
     try {
         if (!await connectToDatabase()) return res.status(503).json({error:'Database not configured'});
+        try { await require('./services/stagingAdmin.service').ensure(); }
+        catch { return res.status(503).json({error:'Staging administrator setup unavailable'}); }
         next();
     } catch {
         return res.status(503).json({error:'Database temporarily unavailable'});

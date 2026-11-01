@@ -60,7 +60,7 @@ module.exports = function(app, verifyToken) {
             // 3. Create User
             const localId = `local_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
             let role = 'user';
-            if (ADMIN_EMAILS.includes(lowerEmail)) role = 'admin';
+            if (process.env.DURABLE_ENGINE_V2 !== 'true' && ADMIN_EMAILS.includes(lowerEmail)) role = 'admin';
 
             const newUser = new User({
                 googleId: localId,
@@ -208,7 +208,7 @@ module.exports = function(app, verifyToken) {
             let role = 'user';
             const lowerEmail = userInfo.email.toLowerCase();
             
-            if (ADMIN_EMAILS.includes(lowerEmail)) role = 'admin';
+            if (process.env.DURABLE_ENGINE_V2 !== 'true' && ADMIN_EMAILS.includes(lowerEmail)) role = 'admin';
             
             if (!user) {
                 let proposedName = userInfo.name;
