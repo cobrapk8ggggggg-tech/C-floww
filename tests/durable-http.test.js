@@ -23,6 +23,9 @@ test('durable HTTP authorization, idempotency, catalogue snapshot and queue budg
   const identity=async req=>({id:req.get('x-test-owner')||'owner-a',admin:req.get('x-test-admin')==='true',email:'test@example.invalid'});
   require('../backend/routes/durableRoutes')(app,(_req,_res,next)=>next(),{identity});
   require('../backend/routes/automationCatalogRoutes')(app);
+  app.post('/api/translator/jobs/:id/pause',(_req,res)=>res.sendStatus(204));
+  app.post('/api/translator/jobs/:id/delay',(_req,res)=>res.sendStatus(204));
+  app.delete('/api/translator/jobs/:id',(_req,res)=>res.sendStatus(204));
   server=app.listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));
   const send=async(path,body,headers={})=>{const r=await fetch('http://127.0.0.1:'+server.address().port+path,{method:body===undefined?'GET':'POST',headers:{'content-type':'application/json',...headers},...(body===undefined?{}:{body:JSON.stringify(body)})});let data;try{data=await r.json();}catch{}return {status:r.status,data};};
   const input={kind:'scrape',sourceUrl:'https://novelfire.net/test',startChapter:1,endChapter:3};
@@ -57,6 +60,11 @@ test('durable HTTP authorization, idempotency, catalogue snapshot and queue budg
   const stranger={'x-test-owner':String(new mongoose.Types.ObjectId())};
   assert.equal((await send('/api/translator/jobs',undefined,stranger)).data.length,0);
   assert.equal((await send('/api/translator/jobs/'+historic.id,undefined,stranger)).status,404);
+  assert.equal((await send('/api/translator/jobs/'+historic.id+'/pause',{},stranger)).status,404);
+  assert.equal((await send('/api/translator/jobs/'+historic.id+'/delay',{},stranger)).status,404);
+  assert.equal((await send('/api/translator/jobs/'+historic.id+'/pause',{}, {'x-test-admin':'true'})).status,204);
+  const rejectedDelete=await fetch('http://127.0.0.1:'+server.address().port+'/api/translator/jobs/'+historic.id,{method:'DELETE',headers:stranger});
+  assert.equal(rejectedDelete.status,404);assert.ok(await require('../backend/models/translationJob.model').exists({_id:historic._id}));
   const legacy=await S.Job.create({engineVersion:1,sourceUrl:'https://novelfire.net/legacy',chapters:[2,3],cursor:1,status:'queued'});
   const legacyState=require('../backend/services/durable/legacyState');
   assert.equal(await legacyState.active(),true);

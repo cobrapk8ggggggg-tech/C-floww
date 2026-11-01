@@ -221,14 +221,24 @@ module.exports=function mount(app,verifyAdmin,deps={}){
    if(!old||(!user.admin&&!await Novel.exists({_id:old.novelId,authorId:user.id})))return res.sendStatus(404);
    res.json({...old,id:String(old._id),verification:'legacy_unverified'});
   }));
+  const legacyControl=async(req,res,next,user)=>{
+   if(!enabled())return next();
+   const old=await legacyModel.findById(req.params.id).select('novelId').lean();
+   if(!old||(!user.admin&&!await Novel.exists({_id:old.novelId,authorId:user.id})))return res.sendStatus(404);
+   return next();
+  };
+  app.post(prefix+'/jobs/:id/delay',verifyAdmin,wrap(async(req,res,next)=>{
+   if(!idOK(req.params.id))return res.sendStatus(400);
+   return legacyControl(req,res,next,await identity(req));
+  }));
   app.post(prefix+'/jobs/:id/pause',verifyAdmin,wrap(async(req,res,next)=>{
-   if(!idOK(req.params.id))return res.sendStatus(400);const q=scope(await identity(req));
-   const j=await S.Job.findOne({_id:req.params.id,engineVersion:2,kind,...q});if(!j)return next();
+   if(!idOK(req.params.id))return res.sendStatus(400);const user=await identity(req),q=scope(user);
+   const j=await S.Job.findOne({_id:req.params.id,engineVersion:2,kind,...q});if(!j)return legacyControl(req,res,next,user);
    const result=await S.transition(j.id,'pause',q);res.status(result?200:409).json({message:result?'Job paused':'Invalid transition'});
   }));
   app.delete(prefix+'/jobs/:id',verifyAdmin,wrap(async(req,res,next)=>{
-   if(!idOK(req.params.id))return res.sendStatus(400);const q=scope(await identity(req));
-   const j=await S.Job.findOne({_id:req.params.id,engineVersion:2,kind,...q});if(!j)return next();
+   if(!idOK(req.params.id))return res.sendStatus(400);const user=await identity(req),q=scope(user);
+   const j=await S.Job.findOne({_id:req.params.id,engineVersion:2,kind,...q});if(!j)return legacyControl(req,res,next,user);
    await S.transition(j.id,'cancel',q);res.json({message:'Job cancelled; saved results retained'});
   }));
  }
