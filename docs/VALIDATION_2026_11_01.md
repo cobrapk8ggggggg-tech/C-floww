@@ -1,6 +1,6 @@
 # نتائج التحقق — 1 نوفمبر 2026
 
-كل الأعداد التالية نتائج فعلية. المصادر الخارجية ومزود الذكاء الاصطناعي في الاختبارات محاكاة.
+كل الأعداد التالية نتائج فعلية. مصادر الفصول ومزود الذكاء الاصطناعي في الاختبارات محاكاة. فحص Preview أدناه اتصل فعلًا بـMongoDB Atlas دون كتابة فصول.
 
 ## اختبارات التخزين والمحرك
 
@@ -38,3 +38,23 @@
 ## ما لم يُختبر
 
 لم تُنفذ بوابات A–F على رواية خارجية. لا كتابة إلى Atlas/Firestore الإنتاجيتين، ولا استخدام مزود AI حقيقي، ولا تشغيل GitHub batch فعلية، ولا Daemon، ولا قياس تكلفة أو زمن Railway. لم يتم ترقية الإنتاج أو تفعيل Cloudflare.
+
+
+## GitHub Actions ونسخة Preview
+
+- [Backend: نجاح الحزمة الكاملة على Node 22 وJava 21](https://github.com/cobrapk8ggggggg-tech/C-floww/actions/runs/41324631448)، للكود b6c11cd.
+- [Scraper: نجاح اختبارات Python](https://github.com/cobrapk8ggggggg-tech/Scraper-new/actions/runs/41324633068)، للكود 304e8f0.
+- [Frontend: نجاح الفحص والاختبارات والبناء واختبارات متصفح المزودين الموجودة](https://github.com/ZeUsx313/New-moon-2/actions/runs/41324730853)، للكود 731ef95. اختبارات صفحة الأتمتة نفسها وحدات؛ لم تُختبر بمتصفح مقابل الخدمات الحية.
+
+[نسخة Preview](https://c-flow-backend-p50kvj366-jooosos-projects.vercel.app) بحالة READY، مراجعة b6c11cdbe657f185c1629f17fa5ec011db6aae54. استُخدم متغير MongoDB الخاص بالمشروع دون كشفه، وفُرض اسم قاعدة الاختبار. فحص `/api/automation/health` عبر اتصال Vercel الموثق بتاريخ 1 نوفمبر 2026 أعاد:
+
+| الحقل | القيمة |
+|---|---|
+| databaseConfigured | true |
+| databaseConnected | true |
+| databaseIsolated | true |
+| firestoreConfigured | false |
+| automationConfigured | false |
+| durableEngine | false |
+
+هذا يثبت الاتصال واختيار قاعدة الاختبار، ولا يثبت كتابة فصل أو عمل Firestore أو تشغيل مهمة حقيقية. لم تتغير إعدادات الإنتاج أو نطاقاته أو أسراره ولم تُرقَّ النسخة. هذه النسخة تسبق إضافة أداة تهيئة مشرف الاختبار وتصحيح عرض تاريخ المهام القديمة.

@@ -14,6 +14,11 @@ test('durable HTTP authorization, idempotency, catalogue snapshot and queue budg
  Object.assign(process.env,{DURABLE_ENGINE_V2:'true',AUTOMATION_SECRET:'test-coordinator',SCRAPER_API_SECRET:'test-scraper',AUTOMATION_INGEST_SECRET:'test-ingest',AUTOMATION_QUEUE_DAILY_BUDGET:'3'});
  let server;
  try{
+  const User=require('../backend/models/user.model');
+  await User.create({googleId:'isolated-google',email:'isolated@example.invalid',name:'Isolated admin'});
+  const bootstrap=require('../scripts/bootstrap-staging');
+  assert.equal((await bootstrap.grant('isolated@example.invalid')).role,'admin');
+  await assert.rejects(()=>bootstrap.grant('absent@example.invalid'),/register_staging_account_first/);
   const app=express();app.use(express.json());
   const identity=async req=>({id:req.get('x-test-owner')||'owner-a',admin:req.get('x-test-admin')==='true',email:'test@example.invalid'});
   require('../backend/routes/durableRoutes')(app,(_req,_res,next)=>next(),{identity});
@@ -44,6 +49,22 @@ test('durable HTTP authorization, idempotency, catalogue snapshot and queue budg
   const cached=(await send('/api/automation/catalog/check',{...cat,chapterNumber:2},auth)).data;
   assert.equal(cached.chapter.number,2);assert.equal(cached.metadata.title,'Test');
   assert.equal((await send('/api/automation/catalog/save',{...cat,total:3,chapters:[]},auth)).status,409);
+  const n=await Novel.findOne({sourceUrl:input.sourceUrl});
+  const historic=await require('../backend/models/translationJob.model').create({novelId:n._id,status:'paused',targetChapters:[1],apiKeys:['synthetic-private-key']});
+  const history=await send('/api/translator/jobs',undefined,{'x-test-admin':'true'});
+  assert.equal(history.data[0].verification,'legacy_unverified');assert.equal(history.data[0].apiKeys,undefined);
+  assert.equal((await send('/api/translator/jobs/'+historic.id,undefined,{'x-test-admin':'true'})).data.apiKeys,undefined);
+  const stranger={'x-test-owner':String(new mongoose.Types.ObjectId())};
+  assert.equal((await send('/api/translator/jobs',undefined,stranger)).data.length,0);
+  assert.equal((await send('/api/translator/jobs/'+historic.id,undefined,stranger)).status,404);
+  const legacy=await S.Job.create({engineVersion:1,sourceUrl:'https://novelfire.net/legacy',chapters:[2,3],cursor:1,status:'queued'});
+  const legacyState=require('../backend/services/durable/legacyState');
+  assert.equal(await legacyState.active(),true);
+  const report=await legacyState.report();assert.equal(report.safeToEnable,false);
+  assert.equal(report.collections.find(c=>c.kind==='legacyScrape').jobs[0].remainingKnown,1);
+  assert.equal((await send('/api/automation/worker/step',{},internal)).data.code,'legacy_jobs_require_reconciliation');
+  await S.Job.updateOne({_id:legacy._id},{$set:{status:'cancelled'}});
+  assert.equal(await legacyState.active(),false);
   await send('/api/automation/jobs/'+id+'/cancel',{});
   assert.deepEqual((await send('/api/automation/worker/ready',{},internal)).data.kinds,[]);
  }finally{

@@ -95,7 +95,7 @@ module.exports=function mount(app,verifyAdmin,deps={}){
  app.get('/api/automation/jobs/:id',verifyAdmin,wrap(async(req,res,next)=>{
   if(!idOK(req.params.id))return res.sendStatus(400);
   const job=await S.Job.findOne({_id:req.params.id,engineVersion:2,...scope(await identity(req))});
-  if(!job)return enabled()?res.sendStatus(404):next();
+  if(!job)return (await identity(req)).admin?next():res.sendStatus(404);
   const current=await S.Task.findOne({jobId:job._id,state:'pending'}).sort({ordinal:1});
   const failed=await S.Task.countDocuments({jobId:job._id,state:'failed'});
   res.json({...view(job),currentChapter:current?.number||null,stage:current?.stage||null,failed,
@@ -110,7 +110,11 @@ module.exports=function mount(app,verifyAdmin,deps={}){
  app.post('/api/automation/jobs/:id/:action',verifyAdmin,wrap(async(req,res,next)=>{
   if(!idOK(req.params.id)||!['pause','resume','cancel'].includes(req.params.action))return res.sendStatus(400);
   const q=scope(await identity(req));
-  const exists=await S.Job.exists({_id:req.params.id,engineVersion:2,...q});if(!exists)return enabled()?res.sendStatus(404):next();
+  const exists=await S.Job.exists({_id:req.params.id,engineVersion:2,...q});if(!exists){
+   if(!(await identity(req)).admin)return res.sendStatus(404);
+   if(enabled()&&req.params.action==='resume')return res.status(409).json({error:'legacy_job_requires_reconciliation'});
+   return next();
+  }
   const job=await S.transition(req.params.id,req.params.action,q);return job?res.json(view(job)):res.status(409).json({error:'Invalid transition'});
  }));
  app.post('/api/automation/worker/step',wrap(async(req,res)=>{
@@ -175,6 +179,7 @@ module.exports=function mount(app,verifyAdmin,deps={}){
  }));
  // Existing frontend starts retain their response shape; only the opt-in mode is routed here.
  for(const [prefix,kind] of [['/api/translator','smart_translate'],['/api/pure-translate','pure_translate'],['/api/glossary-ai','glossary_extract']]){
+  const legacyModel=require('../models/'+({'smart_translate':'translationJob','pure_translate':'pureTranslationJob','glossary_extract':'glossaryExtractionJob'}[kind])+'.model');
   const legacyView=async j=>({...view(j),_id:j.id,status:['queued','running','retry_wait'].includes(j.status)?'active':j.status,
    novelId:j.novelId,totalToTranslate:j.chapters.length,totalToExtract:j.chapters.length,translatedCount:j.successCount,processedCount:j.successCount,
    targetChapters:(await S.Task.find({jobId:j._id,state:{$ne:'verified'}}).sort({ordinal:1})).map(t=>t.number),logs:[]});
@@ -199,12 +204,22 @@ module.exports=function mount(app,verifyAdmin,deps={}){
    const r=await create(body,user,req.get('idempotency-key'));res.json({jobId:r.job.id,message:'Durable job queued'});
   }));
   app.get(prefix+'/jobs',verifyAdmin,wrap(async(req,res,next)=>{
-   if(!enabled())return next();const jobs=await S.Job.find({engineVersion:2,kind,...scope(await identity(req))}).sort({_id:-1}).limit(50);
-   res.json(await Promise.all(jobs.map(legacyView)));
+   if(!enabled())return next();const user=await identity(req);
+   const jobs=await S.Job.find({engineVersion:2,kind,...scope(user)}).sort({_id:-1}).limit(50);
+   const owned=user.admin?null:(await Novel.find({authorId:user.id}).select('_id')).map(n=>n._id);
+   const old=await legacyModel.find(user.admin?{}:{novelId:{$in:owned}}).select('-apiKeys').sort({_id:-1}).limit(50).lean();
+   const combined=[...await Promise.all(jobs.map(legacyView)),...old.map(j=>({...j,id:String(j._id),verification:'legacy_unverified'}))];
+   res.json(combined.sort((a,b)=>String(b._id).localeCompare(String(a._id))).slice(0,50));
   }));
   app.get(prefix+'/jobs/:id',verifyAdmin,wrap(async(req,res,next)=>{
    if(!idOK(req.params.id))return res.sendStatus(400);
-   const j=await S.Job.findOne({_id:req.params.id,engineVersion:2,kind,...scope(await identity(req))});if(!j)return next();res.json(await legacyView(j));
+   const user=await identity(req);
+   const j=await S.Job.findOne({_id:req.params.id,engineVersion:2,kind,...scope(user)});
+   if(j)return res.json(await legacyView(j));
+   if(!enabled())return next();
+   const old=await legacyModel.findById(req.params.id).select('-apiKeys').lean();
+   if(!old||(!user.admin&&!await Novel.exists({_id:old.novelId,authorId:user.id})))return res.sendStatus(404);
+   res.json({...old,id:String(old._id),verification:'legacy_unverified'});
   }));
   app.post(prefix+'/jobs/:id/pause',verifyAdmin,wrap(async(req,res,next)=>{
    if(!idOK(req.params.id))return res.sendStatus(400);const q=scope(await identity(req));

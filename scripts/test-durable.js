@@ -10,6 +10,6 @@ const fs=require('node:fs');
   const chosen=files.length?files:fs.readdirSync('tests').filter(p=>p.endsWith('.test.js')).map(p=>'tests/'+p);
   const child=spawn(process.execPath,['--test',...chosen],{stdio:'inherit',env:{...process.env,
    ...(firestore?{FIRESTORE_EMULATOR_HOST:firestore.host}:{}),AUTOMATION_TEST_MONGO_URI:db.getUri(),AUTOMATION_TEST_REPLICA_URI:db.getUri()}});
-  const code=await new Promise((resolve,reject)=>{child.once('exit',resolve);child.once('error',reject);});process.exitCode=code||0;
+  const code=await new Promise((resolve,reject)=>{child.once('exit',code=>resolve(code??1));child.once('error',reject);});process.exitCode=code||0;
  }finally{firestore?.stop();await db.stop();}
 })().catch(()=>{console.error('Isolated storage tests failed to start');process.exitCode=1;});
