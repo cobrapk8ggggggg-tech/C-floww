@@ -78,12 +78,13 @@ module.exports = function addAutomationRoutes(app, verifyAdmin) {
   // Private Cloudflare cron endpoint. Exactly one chapter per invocation.
   app.post('/api/automation/worker/tick',async(req,res)=>{
     if (!validCoordinatorSecret(req)) return res.status(401).json({error:'Unauthorized'});
+    if(process.env.DURABLE_ENGINE_V2==='true')return res.json({ok:true,disabled:true,code:'legacy_requires_reconciliation'});
     const scraperUrl = process.env.SCRAPER_SERVICE_URL?.replace(/\/+$/,'');
     const scraperSecret = process.env.SCRAPER_API_SECRET || process.env.API_SECRET;
     if(!scraperUrl||!scraperSecret) return res.status(503).json({error:'Scraper connection not configured'});
     const now = new Date(), token = crypto.randomUUID();
     const job = await AutomationJob.findOneAndUpdate({
-      status:{$in:['queued','running']},nextRunAt:{$lte:now},
+      engineVersion:{$ne:2},status:{$in:['queued','running']},nextRunAt:{$lte:now},
       $or:[{leaseUntil:{$lte:now}},{leaseUntil:{$exists:false}}]
     },{
       $set:{status:'running',leaseToken:token,leaseUntil:new Date(Date.now()+LEASE_MS)}
@@ -100,8 +101,8 @@ module.exports = function addAutomationRoutes(app, verifyAdmin) {
     }
     try {
       const response = await fetch(scraperUrl+'/automation/scrape-chapter',{
-        method:'POST',headers:{'Content-Type':'application/json','Authorization':scraperSecret},
-        body:JSON.stringify({sourceUrl:job.sourceUrl,chapterNumber:chapter,adminEmail:job.adminEmail}),
+        method:'POST',headers:{'Content-Type':'application/json','Authorization':scraperSecret,'x-automation-ingest-secret':process.env.AUTOMATION_INGEST_SECRET||''},
+        body:JSON.stringify({sourceUrl:job.sourceUrl,chapterNumber:chapter,adminEmail:job.adminEmail,jobId:job.id}),
         signal:AbortSignal.timeout(STEP_TIMEOUT_MS)
       });
       const body = await response.json().catch(()=>({}));
@@ -131,6 +132,7 @@ module.exports = function addAutomationRoutes(app, verifyAdmin) {
   // Does not change legacy translator or glossary routes.
   app.post('/api/automation/worker/translate-tick',async(req,res)=>{
     if(!validCoordinatorSecret(req))return res.status(401).json({error:'Unauthorized'});
+    if(process.env.DURABLE_ENGINE_V2==='true')return res.json({ok:true,disabled:true,code:'legacy_requires_reconciliation'});
     if(process.env.DURABLE_PURE_TRANSLATION!=='true')
       return res.json({ok:true,disabled:true});
     const PureTranslationJob=require('../models/pureTranslationJob.model');
@@ -177,6 +179,7 @@ module.exports = function addAutomationRoutes(app, verifyAdmin) {
   // Existing smart translator (translation + glossary extraction), one chapter per cron.
   app.post('/api/automation/worker/smart-translate-tick',async(req,res)=>{
     if(!validCoordinatorSecret(req))return res.status(401).json({error:'Unauthorized'});
+    if(process.env.DURABLE_ENGINE_V2==='true')return res.json({ok:true,disabled:true,code:'legacy_requires_reconciliation'});
     if(process.env.DURABLE_SMART_TRANSLATION!=='true')
       return res.json({ok:true,disabled:true});
     const TranslationJob=require('../models/translationJob.model');

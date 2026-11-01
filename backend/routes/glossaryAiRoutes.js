@@ -279,8 +279,7 @@ async function processGlossaryJob(jobId) {
             if (!content || content.trim().length === 0) {
                 await pushLog(jobId, `تخطي الفصل ${chapterNum}: المحتوى غير موجود في السيرفر`, 'warning');
                 await GlossaryExtractionJob.findByIdAndUpdate(jobId, {
-                    $pull: { targetChapters: chapterNum },
-                    $set: { currentChapter: chapterNum, lastUpdate: new Date() }
+                    $set: { status: 'paused', currentChapter: chapterNum, lastUpdate: new Date() }
                 });
                 await delay(Math.max(0, Math.min(3600000, freshJob.chapterDelayMs ?? 3000)));
                 continue;

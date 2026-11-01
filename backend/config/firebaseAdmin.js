@@ -29,16 +29,16 @@ let db = null;
 
 if (serviceAccount) {
   try {
+    require('./automationIsolation').firebaseProject(serviceAccount.project_id);
     // التأكد من عدم تهيئة التطبيق مرتين
-    if (!admin.apps.length) {
-      admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount)
-      });
-      console.log("🔥 Firebase Admin Initialized Successfully");
-    }
+    const projectId=process.env.AUTOMATION_FIREBASE_PROJECT_ID;
+    const name='zeus-automation-'+projectId;
+    const application=admin.apps.find(a=>a.name===name)||admin.initializeApp({
+      credential:admin.credential.cert(serviceAccount),projectId
+    },name);
     // This development branch must never select the production default database.
     const databaseId = require('./automationIsolation').firestoreDatabase();
-    db = require('firebase-admin/firestore').getFirestore(admin.app(), databaseId);
+    db = require('firebase-admin/firestore').getFirestore(application, databaseId);
   } catch (error) {
     console.error("❌ Firebase Admin Initialization Error:", error.message);
   }

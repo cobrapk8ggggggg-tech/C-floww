@@ -81,8 +81,16 @@ function isFirestoreQuotaError(err) {
 
 // ---------- القراءة الموحّدة: الذاكرة → Firestore (+ ترسيب المرآة) → المرآة ----------
 async function fetchChapterContent(firestore, novelId, chapterNumber) {
-    const cached = memGet(novelId, chapterNumber);
-    if (cached !== undefined) return cached;
+    const cached = memCache.get(`${novelId}:${chapterNumber}`);
+    if (cached) {
+        // Other Functions/Actions workers publish outside this process. Validate
+        // the shared mirror revision before serving a process-local cache entry.
+        try {
+            const head = await ChapterContentMirror.findOne({ novelId: String(novelId), number: Number(chapterNumber) }).select('updatedAt').lean();
+            if (head && new Date(head.updatedAt).getTime() <= cached.at) return cached.content;
+        } catch (_) { /* A fresh Firestore read is safer than an unverified cache hit. */ }
+        memDelete(novelId, chapterNumber);
+    }
 
     if (!firestore) throw new Error('FIRESTORE_NOT_INITIALIZED');
 

@@ -102,7 +102,7 @@ class ChatGPTAndroid {
             // Optional account backend field; availability depends on the selected model/account.
             ...(options.reasoningEffort && options.reasoningEffort !== 'auto' ? { thinking_effort: options.reasoningEffort } : {})
         };
-        const response = await this.http.post('/backend-api/conversation', body, { responseType: 'stream', timeout: options.timeout || 300000 });
+        const response = await this.http.post('/backend-api/conversation', body, { responseType: 'stream', timeout: options.timeout || 300000, signal: options.signal });
         let text = '', conversationId = cid, messageId, finished = false;
         await readLines(response.data, line => {
             if (!line.startsWith('data:')) return;

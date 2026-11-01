@@ -1,3 +1,5 @@
+> تحديث 1 نوفمبر: التنفيذ والنتائج الأحدث في [DURABLE_ENGINE_AR.md](docs/DURABLE_ENGINE_AR.md) و[VALIDATION_2026_11_01.md](docs/VALIDATION_2026_11_01.md). السجل التالي تاريخي.
+
 # Verification — 2026-10-31
 
 - Local runtime: Node 24.19.0; CI configured for Node 22. Python 3.12.

@@ -1,3 +1,7 @@
+# Current implementation
+
+See [the V2 implementation](docs/DURABLE_ENGINE_AR.md) and [current validation](docs/VALIDATION_2026_11_01.md). The earlier foundation notes below describe V1 and are historical.
+
 # ZEUS Durable Scraping Foundation
 
 Development branch only. Existing production C-flow backend and all legacy routes are unchanged.

@@ -1,0 +1,47 @@
+name: Manual isolated durable batch
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: zeus-isolated-durable-batch
+  cancel-in-progress: false
+jobs:
+  run-batch:
+    environment: zeus-automation-staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    env:
+      ZEUS_BATCH_ENABLED: 'true'
+      AUTOMATION_LONG_PROVIDER_IDS: ${{ vars.AUTOMATION_LONG_PROVIDER_IDS }}
+      AUTOMATION_QWEN_ACCOUNT_SETUP: ${{ vars.AUTOMATION_QWEN_ACCOUNT_SETUP }}
+      MONGODB_URI: ${{ secrets.MONGODB_URI }}
+      FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+      AUTOMATION_FIREBASE_PROJECT_ID: ${{ vars.AUTOMATION_FIREBASE_PROJECT_ID }}
+      PRODUCTION_FIREBASE_PROJECT_ID: ${{ vars.PRODUCTION_FIREBASE_PROJECT_ID }}
+      AUTOMATION_FIRESTORE_DATABASE: '(default)'
+      AUTOMATION_DB_NAME: zeus_automation_staging
+      AUTOMATION_FREE_PROVIDER_IDS: ${{ vars.AUTOMATION_FREE_PROVIDER_IDS }}
+      ZEUS_SCRAPER_ROOT: ${{ github.workspace }}/external-scraper
+      NODE_BACKEND_URL: ${{ vars.NODE_BACKEND_URL }}
+      SCRAPER_SERVICE_URL: ${{ vars.SCRAPER_SERVICE_URL }}
+      AUTOMATION_INGEST_SECRET: ${{ secrets.AUTOMATION_INGEST_SECRET }}
+      SCRAPER_API_SECRET: ${{ secrets.SCRAPER_API_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: cobrapk8ggggggg-tech/Scraper-new
+          ref: feature/cloudflare-vercel-durable-jobs-foundation
+          path: external-scraper
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r external-scraper/requirements.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci --prefix backend
+      - run: node scripts/run-durable-batch.js

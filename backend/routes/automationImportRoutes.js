@@ -16,6 +16,10 @@ module.exports = function mount(app, deps = {}) {
     if (!expected) return res.status(503).json({error:'Scraper credential not configured'});
     const a=Buffer.from(actual), b=Buffer.from(expected);
     if(a.length!==b.length || !crypto.timingSafeEqual(a,b))return res.sendStatus(403);
+    const ingest=process.env.AUTOMATION_INGEST_SECRET, supplied=req.get('x-automation-ingest-secret')||'';
+    if(!ingest)return res.status(503).json({error:'Ingest credential not configured'});
+    const x=Buffer.from(ingest),y=Buffer.from(supplied);
+    if(x.length!==y.length||!crypto.timingSafeEqual(x,y))return res.sendStatus(403);
     if(!firestore)return res.status(503).json({error:'Isolated Firestore unavailable'});
     next();
   }
@@ -28,6 +32,34 @@ module.exports = function mount(app, deps = {}) {
     return snap.exists && snap.data().importHash===r.contentHash &&
       typeof snap.data().content==='string' && !!snap.data().content.trim();
   }
+  async function persistReceipt(r) {
+    if(!r || hash(r.content)!==r.contentHash)throw new Error('Invalid original checkpoint');
+      const ref=refFor(r);
+      await firestore.runTransaction(async tx=>{
+        const snap=await tx.get(ref);
+        if(snap.exists) {
+          if(snap.data().importHash!==r.contentHash)throw new Error('Existing content conflict');
+          if(typeof snap.data().content!=='string'||!snap.data().content.trim())throw new Error('Stored content empty');
+        } else tx.create(ref,{title:r.title,content:r.content,importHash:r.contentHash,lastUpdated:new Date()});
+      });
+      const saved=await ref.get();
+      if(!saved.exists || saved.data().importHash!==r.contentHash || !saved.data().content?.trim())
+        throw new Error('Readback failed');
+      await Mirror.updateOne({novelId:String(r.novelId),number:r.number},
+        {$set:{content:saved.data().content,updatedAt:new Date()}},{upsert:true,writeConcern:{w:'majority'}});
+      await Novel.updateOne({_id:r.novelId},{$max:{sourceChaptersCount:r.number}});
+      await Receipt.updateOne({_id:r.id},{$set:{persisted:true}},{writeConcern:{w:'majority'}});
+  }
+  app.post('/api/automation/chapters/recover',auth,async(req,res)=>{
+    try {
+      const source=sourceUrl(req.body.sourceUrl),n=req.body.chapterNumber;
+      if(!Number.isSafeInteger(n)||n<1||n>1_000_000)return res.sendStatus(400);
+      const r=await Receipt.findById(key(source,n));
+      if(!r)return res.sendStatus(404);
+      await persistReceipt(r);
+      res.json({ok:true,persisted:true,chapterNumber:n,receiptId:r.id,novelId:String(r.novelId)});
+    }catch{return res.status(503).json({error:'Checkpoint reconciliation unavailable'});}
+  });
   app.post('/api/automation/chapters/check',auth,async(req,res)=>{
     try {
       const source=sourceUrl(req.body.sourceUrl), n=req.body.chapterNumber;
@@ -49,34 +81,24 @@ module.exports = function mount(app, deps = {}) {
       const candidates=await Novel.find({sourceUrl:source}).select('_id').limit(2);
       if(candidates.length>1)throw new Error('Ambiguous existing source identity');
       const novelId=candidates[0]?._id || hash('automation-novel\n'+source).slice(0,24);
+      const owner=req.body.jobId && /^[a-f\d]{24}$/i.test(req.body.jobId)
+        ? await require('../models/automationJob.model').findOne({_id:req.body.jobId,sourceUrl:source,engineVersion:2}) : null;
       await Novel.updateOne({_id:novelId},{$setOnInsert:{title:novelData.title,
         titleEn:novelData.title,author:'System Scraper',authorEmail:'system@scraper',
+        ...(owner && /^[a-f\d]{24}$/i.test(owner.ownerId)?{authorId:owner.ownerId}:{}),
         description:novelData.description || '',status:'خاصة',sourceUrl:source,
-        isWatched:false,chapters:[]}}, {upsert:true,runValidators:true});
+        isWatched:false,chapters:[]}}, {upsert:true,runValidators:true,writeConcern:{w:'majority'}});
       const id=key(source,n);
       // Concurrent deliveries adopt the same immutable original, never overwrite a translation.
       try {
         await Receipt.updateOne({_id:id},{$setOnInsert:{sourceUrl:source,number:n,novelId,
           title:chapter.title,content:chapter.content,contentHash:hash(chapter.content),persisted:false}},
-          {upsert:true,runValidators:true});
+          {upsert:true,runValidators:true,writeConcern:{w:'majority'}});
       } catch(e) {if(e.code!==11000)throw e;}
       const r=await Receipt.findById(id);
       if(!r || hash(r.content)!==r.contentHash)throw new Error('Invalid original checkpoint');
-      const ref=refFor(r);
-      await firestore.runTransaction(async tx=>{
-        const snap=await tx.get(ref);
-        if(snap.exists) {
-          if(snap.data().importHash!==r.contentHash)throw new Error('Existing content conflict');
-          if(typeof snap.data().content!=='string'||!snap.data().content.trim())throw new Error('Stored content empty');
-        } else tx.create(ref,{title:r.title,content:r.content,importHash:r.contentHash,lastUpdated:new Date()});
-      });
-      const saved=await ref.get();
-      if(!saved.exists || saved.data().importHash!==r.contentHash || !saved.data().content?.trim())
-        throw new Error('Readback failed');
-      await Mirror.updateOne({novelId:String(r.novelId),number:n},
-        {$set:{content:saved.data().content,updatedAt:new Date()}},{upsert:true});
-      await Novel.updateOne({_id:r.novelId},{$max:{sourceChaptersCount:n}});
-      await Receipt.updateOne({_id:id},{$set:{persisted:true}});
+      await persistReceipt(r);
+      if(owner)await require('../models/automationJob.model').updateOne({_id:owner._id},{$set:{label:novelData.title.slice(0,300),novelId:r.novelId}});
       return res.json({ok:true,persisted:true,chapterNumber:n,receiptId:id,novelId:String(r.novelId)});
     }catch {return res.status(503).json({error:'Chapter persistence incomplete; safe to retry'});}
   });

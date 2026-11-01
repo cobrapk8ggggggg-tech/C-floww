@@ -7,7 +7,8 @@
     "start": "node --max-http-header-size=262144 index.js",
     "test": "node --test ../tests/*.test.js",
     "test:live": "node --max-http-header-size=262144 ../scripts/live-providers.js",
-    "check": "node ../scripts/check-source.js"
+    "check": "node ../scripts/check-source.js",
+    "test:durable": "cd .. && node scripts/test-durable.js"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",

@@ -2,6 +2,7 @@
 const DEFAULT_BACKEND='https://zeus-cfloww-staging.vercel.app';
 const DEFAULT_SCRAPER='https://zeus-scraper-staging.vercel.app';
 const STEPS={
+  v2:'/api/automation/worker/step',
   scrape:'/api/automation/worker/tick',
   pure:'/api/automation/worker/translate-tick',
   smart:'/api/automation/worker/smart-translate-tick'
@@ -9,11 +10,11 @@ const STEPS={
 const isEnabled=env=>env.AUTOMATION_ENABLED==='true';
 
 async function runStep(env,kind) {
-  if(!STEPS[kind])throw new Error('Unsupported queue message');
+  if(kind!=='ready'&&!STEPS[kind])throw new Error('Unsupported queue message');
   if(!env.AUTOMATION_SECRET || !env.BACKEND_URL)throw new Error('Coordinator not configured');
   const base=new URL(env.BACKEND_URL);
   if(base.protocol!=='https:')throw new Error('HTTPS is required');
-  const url=new URL(STEPS[kind],base);
+  const url=new URL(kind==='ready'?'/api/automation/worker/ready':STEPS[kind],base);
   const response=await fetch(url,{
     method:'POST',
     headers:{'x-automation-secret':env.AUTOMATION_SECRET},
@@ -23,10 +24,42 @@ async function runStep(env,kind) {
   return response.json();
 }
 
+async function permit(env,cost){
+ const url=new URL('/api/automation/worker/queue-permit',env.BACKEND_URL);
+ const r=await fetch(url,{method:'POST',headers:{'content-type':'application/json','x-automation-secret':env.AUTOMATION_SECRET},
+  body:JSON.stringify({cost}),signal:AbortSignal.timeout(12000)});
+ if(!r.ok)return false;
+ return (await r.json()).allowed===true;
+}
+async function send(env,kind,options){
+ if(!await permit(env,3))return false;
+ await env.AUTOMATION_QUEUE.send({kind},options);return true;
+}
+
+async function authorized(request,env){
+ const supplied=request.headers.get('x-automation-secret')||'';
+ if(!env.AUTOMATION_SECRET||!supplied||supplied.length>512)return false;
+ const algorithm={name:'HMAC',hash:'SHA-256'},enc=new TextEncoder(),data=enc.encode('ZEUS coordinator wake');
+ const expected=await crypto.subtle.importKey('raw',enc.encode(env.AUTOMATION_SECRET),algorithm,false,['sign']);
+ const actual=await crypto.subtle.importKey('raw',enc.encode(supplied),algorithm,false,['verify']);
+ const signature=await crypto.subtle.sign('HMAC',expected,data);
+ return crypto.subtle.verify('HMAC',actual,signature,data);
+}
+async function wake(env){
+ const ready=await runStep(env,'ready');
+ const kinds=[...new Set(ready.kinds||[])].filter(k=>STEPS[k]).slice(0,2);
+ for(const kind of kinds)await send(env,kind);
+}
+
 export default {
   async fetch(request,env) {
-    if(request.method!=='GET')return new Response('Method Not Allowed',{status:405});
     const path=new URL(request.url).pathname;
+    if(path==='/wake'&&request.method==='POST'){
+      if(!await authorized(request,env))return new Response('Unauthorized',{status:401});
+      if(!isEnabled(env))return Response.json({ok:true,disabled:true});
+      try{await wake(env);return Response.json({ok:true});}catch{return Response.json({ok:false},{status:503});}
+    }
+    if(request.method!=='GET')return new Response('Method Not Allowed',{status:405});
     if(path==='/health')return Response.json({
       service:'zeus-automation-coordinator',status:'ok',enabled:isEnabled(env),
       queueConfigured:Boolean(env.AUTOMATION_QUEUE)
@@ -56,8 +89,7 @@ export default {
       return;
     }
     if(!env.AUTOMATION_QUEUE)throw new Error('AUTOMATION_QUEUE is not bound');
-    ctx.waitUntil(Promise.all(Object.keys(STEPS).map(kind=>
-      env.AUTOMATION_QUEUE.send({kind}))));
+    ctx.waitUntil(wake(env));
   },
   async queue(batch,env){
     for(const message of batch.messages){
@@ -73,12 +105,13 @@ export default {
         // pause this chain; the periodic cron acts as a recovery watchdog.
         if(result && !result.idle && !result.disabled && !result.retry &&
            !result.paused && result.progressed!==false && !result.stale && result.ok!==false) {
-          await env.AUTOMATION_QUEUE.send({kind},{delaySeconds:5});
+          await send(env,kind,{delaySeconds:5});
         }
         message.ack();
       }catch(e){
         console.error('ZEUS queue step failed:',kind,e.message);
-        message.retry({delaySeconds:60});
+        try{if(await permit(env,1))message.retry({delaySeconds:60});else message.ack();}
+        catch{message.ack();} // MongoDB watchdog recovers after backend/quota outage.
       }
     }
   }

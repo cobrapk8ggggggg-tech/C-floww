@@ -55,7 +55,9 @@ app.get('/api/automation/health', async (_req, res) => {
     databaseIsolated: mongoose.connection.readyState === 1 && mongoose.connection.name === configuredStagingDb,
     firestoreConfigured: Boolean(require('./config/firebaseAdmin').db),
     firestoreDatabase: require('./config/automationIsolation').firestoreDatabase(),
-    automationConfigured: Boolean(process.env.AUTOMATION_SECRET && process.env.SCRAPER_SERVICE_URL)
+    automationConfigured: Boolean(process.env.AUTOMATION_SECRET && process.env.SCRAPER_SERVICE_URL && process.env.SCRAPER_API_SECRET && process.env.AUTOMATION_INGEST_SECRET),
+    revision: process.env.VERCEL_GIT_COMMIT_SHA || 'local',
+    durableEngine: process.env.DURABLE_ENGINE_V2 === 'true'
 });
 });
 
@@ -111,11 +113,14 @@ async function verifyAdmin(req, res, next) {
 // 🔥 تحميل مسارات المصادقة الجديدة (Login/Signup/Google)
 require('./routes/authRoutes')(app, verifyToken);
 
+require('./routes/durableRoutes')(app, verifyAdmin);
+
 // تحميل مسارات الإدارة
 require('./routes/adminRoutes')(app, verifyToken, verifyAdmin, upload);
 // Bounded chapter jobs: opt-in, with MongoDB checkpoints and Cloudflare cron.
 require('./routes/automationRoutes')(app, verifyAdmin);
 require('./routes/automationImportRoutes')(app);
+require('./routes/automationCatalogRoutes')(app);
 
 // 🔥 تحميل مسارات المترجم الذكي
 require('./routes/translatorRoutes')(app, verifyToken, verifyAdmin);

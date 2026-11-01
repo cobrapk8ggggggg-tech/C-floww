@@ -37,16 +37,16 @@ async function callAccountProvider(provider, model, token, prompt, options = {})
                 const api = options.chatgptClient || new ChatGPTAndroid(token);
                 text = await api.send(input, { context, projectId, model: effectiveModel,
                     reasoningEffort: task.reasoningEffort !== 'auto' && task.reasoningEffort || provider.reasoningEffort,
-                    attachments: options.attachments, timeout: options.timeout });
+                    attachments: options.attachments, signal: options.signal, timeout: options.timeout });
             } else if (isDeepSeekWorkerProvider(provider)) {
                 text = await askDeepSeekWorker(input, { token, context, baseUrl: provider.baseUrl || undefined,
                     model: effectiveModel, thinkingEnabled: provider.thinkingEnabled, searchEnabled: provider.searchEnabled,
                     temperature: provider.temperature, maxTokens: provider.maxTokens, presencePenalty: provider.presencePenalty,
-                    frequencyPenalty: provider.frequencyPenalty, timeout: options.timeout });
+                    frequencyPenalty: provider.frequencyPenalty, signal: options.signal, timeout: options.timeout });
             } else {
                 const detected = effectiveModel && !['adaptive', 'gemini-web'].includes(effectiveModel)
                     ? await require('./geminiDiscovery.service').geminiOptions(token, effectiveModel, provider.geminiAccountIndex) : {};
-                text = await askGeminiWeb(input, { token, context, timeout: options.timeout, log: options.log,
+                text = await askGeminiWeb(input, { token, context, signal: options.signal, timeout: options.timeout, log: options.log,
                     accountIndex: provider.geminiAccountIndex ?? 1, buildLabel: provider.geminiBuildLabel,
                     modelHeader: provider.geminiModelHeader, ...detected, allowGuestFallback: provider.allowGuestFallback === true,
                     autoContinue: false, attachments: options.attachments });
@@ -54,7 +54,7 @@ async function callAccountProvider(provider, model, token, prompt, options = {})
             if (persistent) await store.set(key, context);
             return text;
         };
-        if (/^gemini_web(?:_|$)/i.test(provider.providerId || '') && provider.geminiParagraphMode !== false && purpose === 'translation' && options.sourceText) {
+        if (!options.durableSingleCall && /^gemini_web(?:_|$)/i.test(provider.providerId || '') && provider.geminiParagraphMode !== false && purpose === 'translation' && options.sourceText) {
             return translateComplete({ source: options.sourceText, prompt, send,
                 chunkSize: provider.translationChunkChars || 2400, log: options.log });
         }

@@ -8,8 +8,14 @@ function mongoDatabase(env=process.env) {
 }
 function firestoreDatabase(env=process.env) {
   const name=env.AUTOMATION_FIRESTORE_DATABASE || 'zeus-automation-staging';
-  if(!/^zeus[-_]automation[-_][a-z0-9_-]{1,40}$/.test(name))
+  const independentDefault=name==='(default)' && /^zeus[-_]automation[-_][a-z0-9_-]+$/.test(env.AUTOMATION_FIREBASE_PROJECT_ID||'') && env.AUTOMATION_FIREBASE_PROJECT_ID!==env.PRODUCTION_FIREBASE_PROJECT_ID;
+  if(!independentDefault && !/^zeus[-_]automation[-_][a-z0-9_-]{1,40}$/.test(name))
     throw new Error('An isolated automation Firestore database is required');
   return name;
 }
-module.exports={mongoDatabase,firestoreDatabase};
+function firebaseProject(actualProjectId,env=process.env){
+ const expected=env.AUTOMATION_FIREBASE_PROJECT_ID;
+ if(!expected||actualProjectId!==expected||expected===env.PRODUCTION_FIREBASE_PROJECT_ID)throw new Error('Isolated Firebase project identity mismatch');
+ firestoreDatabase(env);return expected;
+}
+module.exports={mongoDatabase,firestoreDatabase,firebaseProject};

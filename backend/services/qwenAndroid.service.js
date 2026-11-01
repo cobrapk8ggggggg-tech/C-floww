@@ -96,7 +96,7 @@ async function createChat(options = {}) {
     let res;
     try {
         res = await axios.post(`${BASE}/api/v2/chats/new`, { chat_mode: 'normal', project_id: '' }, {
-            headers: headers('new', options), timeout: options.timeout || 60000
+            headers: headers('new', options), signal: options.signal, timeout: options.timeout || 60000
         });
     } catch (err) {
         classifyQwenAxiosError(err, 'Qwen chat creation failed');
@@ -192,7 +192,7 @@ async function askQwen(prompt, options = {}) {
     let response;
     try {
         response = await axios.post(`${BASE}/api/v2/chat/completions`, payload, {
-            params: { chat_id: chatId }, headers: headers('chat', { ...options, token }), timeout: options.timeout || 500000, responseType: 'stream'
+            params: { chat_id: chatId }, headers: headers('chat', { ...options, token }), signal: options.signal, timeout: options.timeout || 500000, responseType: 'stream'
         });
     } catch (err) {
         classifyQwenAxiosError(err, 'Qwen chat completions failed');

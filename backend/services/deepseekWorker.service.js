@@ -14,7 +14,7 @@ async function askDeepSeekWorker(prompt, options = {}) {
         presence_penalty: options.presencePenalty ?? 0, frequency_penalty: options.frequencyPenalty ?? 0,
         ...(context.sessionId ? { session_id: context.sessionId } : {}),
         ...(context.parentMessageId != null ? { parent_message_id: typeof context.parentMessageId === 'string' && /^\d+$/.test(context.parentMessageId) && Number.isSafeInteger(Number(context.parentMessageId)) ? Number(context.parentMessageId) : context.parentMessageId } : {}) };
-    const { data } = await axios.post(workerBase(options.baseUrl || undefined) + '/api/chat', body, { timeout: options.timeout || 300000 });
+    const { data } = await axios.post(workerBase(options.baseUrl || undefined) + '/api/chat', body, { timeout: options.timeout || 300000, signal: options.signal });
     if (data.error || data.success === false) throw new Error('DeepSeek Worker rejected the request');
     if (typeof data.response !== 'string' || !data.response.trim()) throw new Error('DeepSeek Worker returned an empty answer');
     if (data.finish_reason === 'length') throw new Error('DeepSeek Worker output reached the token limit');

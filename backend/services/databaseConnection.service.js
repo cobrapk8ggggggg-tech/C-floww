@@ -7,7 +7,7 @@ module.exports = function createConnector(mongoose, {uri, dbName}) {
     if(!uri)return null;
     if(mongoose.connection.readyState===1)return mongoose;
     if(!connecting) {
-      connecting=mongoose.connect(uri,{dbName,serverSelectionTimeoutMS:5000})
+      connecting=mongoose.connect(uri,require('../config/mongoOptions')(dbName))
         .finally(()=>{connecting=undefined;});
     }
     return connecting;

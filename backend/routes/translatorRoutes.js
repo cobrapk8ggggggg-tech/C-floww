@@ -474,7 +474,7 @@ async function translateResiduesOnly(provider, modelToUse, key, translatedText, 
 المقاطع والسياقات:
 ${JSON.stringify(contexts, null, 2)}
 `;
-    const response = await callTranslationProvider(provider, modelToUse, key, prompt, options);
+    const response = await (options?.callProvider || callTranslationProvider)(provider, modelToUse, key, prompt, options);
     let replacements = [];
     try {
         const parsed = parseJsonFromAiText(response);
@@ -524,12 +524,12 @@ async function reviewQuestionableChapter(provider, modelToUse, key, translatedTe
 - إذا كان النص العربي مجرد سطرين أو جزء صغير من الفصل فالإجابة لا.
 
 النص الأصلي للمقارنة (قد يكون بأي لغة):
-"""${sourceContent.substring(0, 7000)}"""
+"""${(options?.durableSingleCall ? sourceContent : sourceContent.substring(0, 7000))}"""
 
 النص العربي للمراجعة:
 """${translatedText.substring(0, 12000)}"""
 `;
-    const response = await callTranslationProvider(provider, modelToUse, key, prompt, options);
+    const response = await (options?.callProvider || callTranslationProvider)(provider, modelToUse, key, prompt, options);
     const answer = String(response || '').trim().toLowerCase();
     const firstToken = answer.replace(/["'`{}\[\]().،,:;!؟]/g, ' ').trim().split(/\s+/)[0] || '';
 
@@ -606,6 +606,7 @@ async function callTranslationProvider(provider, modelName, apiKey, prompt, opti
             modelType: provider.deepSeekModelType === 'expert' ? 'expert' : 'default',
             powUrl: resolveDeepSeekPowUrl(provider),
             timeout: options.timeout || 500000,
+            signal: options.signal,
             context: getDeepSeekConversationContext(
                 options.conversationContexts,
                 options.conversationPurpose,
@@ -619,7 +620,7 @@ async function callTranslationProvider(provider, modelName, apiKey, prompt, opti
     // ---- Gemini native ----
     if (providerId === 'gemini' && !provider.baseUrl) {
         const genAI = new GoogleGenerativeAI(apiKey);
-        const model = genAI.getGenerativeModel({ model: modelName });
+        const model = genAI.getGenerativeModel({ model: modelName }, {timeout: options.timeout || 500000,signal:options.signal});
         const result = await model.generateContent(prompt);
         const response = await result.response;
         return response.text();
@@ -635,6 +636,7 @@ async function callTranslationProvider(provider, modelName, apiKey, prompt, opti
             thinkingEnabled: Boolean(provider.thinkingEnabled),
             searchEnabled: provider.searchEnabled !== false,
             timeout: options.timeout || 500000,
+            signal: options.signal,
             context: getDeepSeekConversationContext(
                 options.conversationContexts,
                 options.conversationPurpose,
@@ -671,7 +673,7 @@ async function callTranslationProvider(provider, modelName, apiKey, prompt, opti
             };
         }
 
-        const res = await axios.post(url, body, { headers, timeout: 500000 });
+        const res = await axios.post(url, body, { headers, timeout: options.timeout || 500000, signal: options.signal });
         const data = res.data;
         if (data.success && data.result) {
             // Translation models return translated_text, LLM models return response
@@ -700,7 +702,7 @@ async function callTranslationProvider(provider, modelName, apiKey, prompt, opti
         temperature: 0.3
     };
 
-    const res = await axios.post(url, body, { headers, timeout: 500000 });
+    const res = await axios.post(url, body, { headers, timeout: options.timeout || 500000, signal: options.signal });
     const choice = res.data?.choices?.[0];
     if (choice && choice.message && choice.message.content) {
         // 🔥 FIX: a translation cut by the provider's output limit silently loses the
@@ -1325,6 +1327,7 @@ if (jsonMatch) {
 
                 if (!extractionDone) {
                     await pushLog(jobId, `⚠️ فشل استخراج المصطلحات لهذا الفصل`, 'warning');
+                    if (options.oneChapter) throw new Error('Glossary extraction incomplete');
                 }
 
                 try {

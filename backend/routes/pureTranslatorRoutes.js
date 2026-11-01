@@ -170,12 +170,11 @@ async function processPureTranslationJob(jobId, options = {}) {
             if (!sourceContent || sourceContent.trim().length === 0) {
                 await pushLog(jobId, `تخطي الفصل ${chapterNum}: المحتوى غير موجود في السيرفر (Firestore)`, 'warning');
                 await PureTranslationJob.findByIdAndUpdate(jobId, {
-                    $pull: { targetChapters: chapterNum },
-                    $set: { currentChapter: chapterNum, lastUpdate: new Date() }
+                    $set: { status: 'paused', currentChapter: chapterNum, lastUpdate: new Date() }
                 });
                 // ⏱️ الفاصل يُطبق حتى عند التخطي (نفس إيقاع المستخرج الذكي)
                 const skipJob = await PureTranslationJob.findById(jobId).select('chapterDelayMs');
-                await delay(Math.max(0, Math.min(3600000, skipJob?.chapterDelayMs ?? 2000)));
+                if (!options.oneChapter) await delay(Math.max(0, Math.min(3600000, skipJob?.chapterDelayMs ?? 2000)));
                 continue;
             }
 

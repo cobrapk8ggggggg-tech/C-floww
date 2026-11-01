@@ -57,8 +57,8 @@ function buildPowRequestUrl(powUrl, token) {
     return `${cleanUrl}${separator}authorization=${encodeURIComponent(`Bearer ${token}`)}`;
 }
 
-async function getFreshPow(powUrl, token) {
-    const response = await axios.get(buildPowRequestUrl(powUrl, token), { timeout: 60000 });
+async function getFreshPow(powUrl, token, signal) {
+    const response = await axios.get(buildPowRequestUrl(powUrl, token), { timeout: 60000, signal });
     const powResponse = response.data?.pow_response || response.data?.x_ds_pow_response;
     const powData = response.data?.solved_json;
 
@@ -71,7 +71,7 @@ async function getFreshPow(powUrl, token) {
     };
 }
 
-async function createChatSession(token) {
+async function createChatSession(token, signal) {
     // نفس نداء التطبيق: POST بجسم فارغ وبنفس ترويسات الأندرويد
     const response = await axios.post('https://chat.deepseek.com/api/v0/chat_session/create', {}, {
         headers: {
@@ -87,7 +87,7 @@ async function createChatSession(token) {
             'Authorization': `Bearer ${token}`,
             'accept-charset': 'UTF-8'
         },
-        timeout: 60000
+        timeout: 60000, signal
     });
     const sessionId = response.data?.data?.biz_data?.chat_session?.id;
     if (!sessionId) throw new Error(`DeepSeek session id missing: ${JSON.stringify(response.data)}`);
@@ -135,9 +135,9 @@ async function askDeepSeek(prompt, options = {}) {
     if (!token) throw new Error('A DeepSeek account token is required');
     const powUrl = options.powUrl || DEFAULT_POW_URL;
     const context = options.context || {};
-    const sessionId = context.sessionId || options.sessionId || await createChatSession(token);
+    const sessionId = context.sessionId || options.sessionId || await createChatSession(token, options.signal);
     const parentMessageId = context.parentMessageId || options.parentMessageId || null;
-    const { powResponse, powData } = await getFreshPow(powUrl, token);
+    const { powResponse, powData } = await getFreshPow(powUrl, token, options.signal);
 
     const response = await axios.post('https://chat.deepseek.com/api/v0/chat/completion', {
         // الحمولة الجديدة المُتحقَّق منها حياً (نفس تطبيق أندرويد 2.1.0):
@@ -159,7 +159,7 @@ async function askDeepSeek(prompt, options = {}) {
         stream: true
     }, {
         headers: buildFullHeaders(token, powResponse),
-        timeout: options.timeout || 500000,
+        timeout: options.timeout || 500000, signal: options.signal,
         responseType: 'stream'
     });
 

@@ -31,8 +31,9 @@ test('Cloudflare Queue chains a successful authorized step and retries transient
   let acked=0,retried=0;
   try{
     global.fetch=async(url,options)=>{
+      if(String(url).endsWith('/queue-permit'))return {ok:true,json:async()=>({allowed:true})};
       calls.push({url:String(url),method:options.method,secret:options.headers['x-automation-secret']});
-      return {ok:true,json:async()=>({ok:true,completed:false})};
+      return {ok:true,json:async()=>String(url).endsWith('/ready')?{ok:true,kinds:['pure','smart']}:{ok:true,completed:false}};
     };
     await worker.queue({messages:[{body:{kind:'smart'},ack(){acked++},retry(){retried++}}]},env);
     assert.equal(acked,1);
@@ -41,9 +42,11 @@ test('Cloudflare Queue chains a successful authorized step and retries transient
     assert.equal(calls[0].secret,'test-only-secret');
     assert.deepEqual(sent[0].body,{kind:'smart'});
     assert.equal(sent[0].options.delaySeconds,5);
-    await worker.scheduled({},env,{waitUntil:promise=>promise});
-    assert.deepEqual(sent.slice(1).map(x=>x.body.kind).sort(),['pure','scrape','smart']);
-    global.fetch=async()=>{throw Error('upstream failure')};
+    let pending;
+    await worker.scheduled({},env,{waitUntil:promise=>{pending=promise;}});
+    await pending;
+    assert.deepEqual(sent.slice(1).map(x=>x.body.kind).sort(),['pure','smart']);
+    global.fetch=async url=>{if(String(url).endsWith('/queue-permit'))return {ok:true,json:async()=>({allowed:true})};throw Error('upstream failure')};
     await worker.queue({messages:[{body:{kind:'scrape'},ack(){acked++},retry(x){retried++;assert.equal(x.delaySeconds,60)}}]},env);
     assert.equal(retried,1);
   }finally{global.fetch=originalFetch}
@@ -56,7 +59,7 @@ test('successor send failure retries before acknowledgement; no-progress results
     AUTOMATION_QUEUE:{send:async()=>{throw Error('queue unavailable')}}};
   const batch={messages:[{body:{kind:'scrape'},ack(){acked++},retry(){retried++}}]};
   try {
-    global.fetch=async()=>({ok:true,json:async()=>({ok:true})});
+    global.fetch=async url=>({ok:true,json:async()=>String(url).endsWith('/queue-permit')?{allowed:true}:{ok:true}});
     await worker.queue(batch,env);
     assert.equal(acked,0);assert.equal(retried,1);
     global.fetch=async()=>({ok:true,json:async()=>({ok:true,progressed:false})});
@@ -74,4 +77,15 @@ test('readiness checks configured backend and rejects configured but disconnecte
     assert.equal(r.status,503);
     assert.equal(urls[0],'https://custom.example/api/automation/health');
   } finally {global.fetch=original;}
+});
+test('cron emits no idle messages, and wake endpoint requires the existing secret',async()=>{
+ const worker=await loadWorker(),original=global.fetch;let sent=0;
+ const env={AUTOMATION_ENABLED:'true',AUTOMATION_SECRET:'test-wake',BACKEND_URL:'https://staging.example',AUTOMATION_QUEUE:{send:async()=>sent++}};
+ try{
+  global.fetch=async()=>({ok:true,json:async()=>({kinds:[]})});
+  let pending;await worker.scheduled({},env,{waitUntil:p=>{pending=p;}});await pending;assert.equal(sent,0);
+  const denied=await worker.fetch(new Request('https://worker.example/wake',{method:'POST'}),env);assert.equal(denied.status,401);
+  const allowed=await worker.fetch(new Request('https://worker.example/wake',{method:'POST',headers:{'x-automation-secret':'test-wake'}}),env);
+  assert.equal(allowed.status,200);assert.equal(sent,0);
+ }finally{global.fetch=original;}
 });

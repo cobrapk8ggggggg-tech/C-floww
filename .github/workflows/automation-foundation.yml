@@ -6,18 +6,6 @@ on:
 jobs:
   backend-validation:
     runs-on: ubuntu-latest
-    services:
-      mongodb:
-        image: mongo:7
-        ports:
-          - 27017:27017
-        options: >-
-          --health-cmd="mongosh --quiet --eval 'db.adminCommand({ ping: 1 })'"
-          --health-interval=5s
-          --health-timeout=5s
-          --health-retries=15
-    env:
-      AUTOMATION_TEST_MONGO_URI: mongodb://127.0.0.1:27017
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -25,10 +13,11 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: backend/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
       - run: npm ci --prefix backend
-      - run: node --check backend/routes/automationRoutes.js
+      - run: node scripts/check-source.js
       - run: node --input-type=module --check < infra/cloudflare/index.js
-      - run: node --check backend/routes/translatorRoutes.js
-      - run: node --check backend/routes/pureTranslatorRoutes.js
-      - run: node --check backend/index.js
-      - run: node --test tests/automation-foundation.test.js tests/automation-integration.test.js tests/automation-import.test.js tests/automation-isolation.test.js tests/automation-database-connection.test.js tests/cloudflare-worker.test.js tests/automation-300chapters.test.js
+      - run: node scripts/test-durable.js

@@ -146,7 +146,7 @@ function extractSessionTokens(page) {
 }
 
 // جلب صفحة مع تتبّع التحويلات يدوياً ودمج كوكيز كل قفزة (نفس منطق getTokens القديم)
-async function fetchPageFollowingRedirects(startUrl, headers, jar) {
+async function fetchPageFollowingRedirects(startUrl, headers, jar, signal) {
     let url = startUrl;
     let resp = null;
     const baseHeaders = { ...headers };
@@ -155,7 +155,7 @@ async function fetchPageFollowingRedirects(startUrl, headers, jar) {
     for (let hop = 0; hop < 5; hop++) {
         resp = await axios.get(url, {
             headers: baseHeaders,
-            timeout: 30000,
+            timeout: 30000, signal,
             maxRedirects: 0,
             validateStatus: () => true
         });
@@ -176,7 +176,7 @@ async function fetchPageFollowingRedirects(startUrl, headers, jar) {
 
 // ---------- جلب توكني الجلسة SNlM0e + FdrFJe (المسار المصادق بالكوكيز) ----------
 async function getTokens(jar, options = {}) {
-    const page = await fetchPageFollowingRedirects(`${GEMINI_BASE}/u/${options.accountIndex ?? 1}/app`, geminiHeaders(cookiesToString(jar.cookies)), jar);
+    const page = await fetchPageFollowingRedirects(`${GEMINI_BASE}/u/${options.accountIndex ?? 1}/app`, geminiHeaders(cookiesToString(jar.cookies)), jar, options.signal);
     const { snlm0e, fdrfje } = extractSessionTokens(page);
     if (!snlm0e) {
         console.error(`[geminiWeb] SNlM0e not found (page len ${page.length}) — الكوكيز غير صالحة أو منتهية`);
@@ -189,9 +189,9 @@ async function getTokens(jar, options = {}) {
 // ---------- 🔥 جلب توكني الجلسة في وضع الضيف (نقل حرفي لـ _gemini_fallback_get_tokens) ----------
 // نطلب gemini.google.com مباشرة بدون كوكيز المستخدم ونستخرج SNlM0e + FdrFJe من الرد،
 // والجرة تحتفظ بكوكيز المجهولين (NID...) لإعادة استخدامها في POST.
-async function getGuestTokens(jar) {
+async function getGuestTokens(jar, signal) {
     try {
-        const page = await fetchPageFollowingRedirects(GEMINI_BASE, geminiGuestHeaders(), jar);
+        const page = await fetchPageFollowingRedirects(GEMINI_BASE, geminiGuestHeaders(), jar, signal);
         const { snlm0e, fdrfje } = extractSessionTokens(page);
         if (!snlm0e) {
             console.error(`[geminiWeb] guest: SNlM0e not found in anonymous response (page len ${page.length})`);
@@ -275,7 +275,7 @@ async function sendMessage(jar, tokens, prompt, conv, timeoutMs, options = {}) {
     const response = await axios.post(`${GEMINI_BASE}/u/${options.accountIndex ?? 1}/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate`, new URLSearchParams(payload).toString(), {
         params,
         headers,
-        timeout: timeoutMs || 300000,
+        timeout: timeoutMs || 300000, signal: options.signal,
         responseType: 'stream',
         maxRedirects: 0,
         validateStatus: s => s < 500
@@ -296,7 +296,7 @@ async function sendMessage(jar, tokens, prompt, conv, timeoutMs, options = {}) {
 
 // ---------- 🔥 إرسال رسالة في وضع الضيف (نقل حرفي لـ _gemini_fallback_send) ----------
 // بدون أي حالة محادثة — كل طلب مستقل تماماً كما في البروكسي.
-async function sendGuestMessage(jar, tokens, prompt, timeoutMs) {
+async function sendGuestMessage(jar, tokens, prompt, timeoutMs, signal) {
     const d1 = [
         [prompt, 0, null, [], null, null, 0],
         ['en'],
@@ -321,7 +321,7 @@ async function sendGuestMessage(jar, tokens, prompt, timeoutMs) {
     const response = await axios.post(GEMINI_GUEST_STREAM_URL, new URLSearchParams(payload).toString(), {
         params,
         headers,
-        timeout: timeoutMs || 300000,
+        timeout: timeoutMs || 300000, signal,
         responseType: 'stream',
         maxRedirects: 0,
         validateStatus: s => s < 500
@@ -373,34 +373,34 @@ function stitchWithoutOverlap(existing, addition) {
 // نفس سلوك fallback البروكسي: جلسة مجهولة → طلب مستقل بلا محادثة لاصقة.
 // ضد القطع: بما أن وضع الضيف بلا محادثة لاصقة، إعادة الإرسال تشمل المهمة الأصلية
 // كاملة + نقطة التوقف، مع منع التكرار وقصّ التداخل عند الدمج.
-async function runGuestMode(prompt, { timeoutMs, log }) {
+async function runGuestMode(prompt, { timeoutMs, log, signal, autoContinue = true }) {
     const jar = getGuestJar();
 
     // 1) توكنات الجلسة المجهولة (محاولة ثانية بعد مهلة قصيرة مثل المسار المصادق)
-    let tokens = await getGuestTokens(jar);
+    let tokens = await getGuestTokens(jar, signal);
     if (!tokens) {
         await new Promise(r => setTimeout(r, 1200));
-        tokens = await getGuestTokens(jar);
+        tokens = await getGuestTokens(jar, signal);
     }
     if (!tokens) {
         throw new GeminiWebAuthError('تعذر تشغيل وضع الضيف: لم يُعثر على توكن جلسة مجهولة في صفحة gemini.google.com (قد يكون الوصول المجهول محظوراً من هذا الخادم). أضف كوكيز حساب Google في حقل المفاتيح لتجربة موثوقة');
     }
 
     // 2) الطلب الأول (مستقل — بلا حالة محادثة)
-    const first = await sendGuestMessage(jar, tokens, prompt, timeoutMs);
+    const first = await sendGuestMessage(jar, tokens, prompt, timeoutMs, signal);
     let resultText = first.text || '';
 
     // 3) 🔥 إكمال تلقائي ضد القطع في وضع الضيف
     let continuationRounds = 0;
     const MAX_CONTINUATIONS = 2;
-    while (looksIncomplete(resultText) && continuationRounds < MAX_CONTINUATIONS) {
+    while (autoContinue !== false && looksIncomplete(resultText) && continuationRounds < MAX_CONTINUATIONS) {
         continuationRounds++;
         const tail = resultText.slice(-90).replace(/\s+/g, ' ');
         if (log) log(`الرد في وضع الضيف كان مقطوعاً — إعادة إرسال المهمة مع الإكمال من نقطة التوقف (جولة ${continuationRounds}/${MAX_CONTINUATIONS})...`, 'info');
         console.log(`[geminiWeb] guest continuation round ${continuationRounds} (text len ${resultText.length})`);
         try {
             const contPrompt = `${prompt}\n\n---\nمهمة إلحاحية: ردك السابق على هذه المهمة نفسها انقطع قبل اكتماله. آخر ما انتهى إليه النص هو: «...${tail}»\nأرسل بقية النص فقط بدءاً من النقطة التي توقفت عندها مباشرة. لا تكرر أي جملة أو فقرة سبقت، ولا تبدأ من البداية، ولا تضف مقدمات أو شرحاً — البقية فقط حتى النهاية ثم توقف.`;
-            const cont = await sendGuestMessage(jar, tokens, contPrompt, timeoutMs);
+            const cont = await sendGuestMessage(jar, tokens, contPrompt, timeoutMs, signal);
             if (!cont.text || !cont.text.trim()) break;
             const before = resultText.length;
             resultText = stitchWithoutOverlap(resultText, cont.text);
@@ -466,7 +466,7 @@ async function askGeminiWeb(prompt, options = {}) {
             const why = 'لم تتوفر جلسة حساب صالحة';
             if (log) log(`⚠️ فشل جلب جلسة Gemini بالكوكيز (${why}) — الانتقال الآن إلى وضع الضيف (بدون حساب)...`, 'warning');
             console.warn(`[geminiWeb] cookie-based tokens failed (${tokenErr?.message || 'no SNlM0e'}) → switching to GUEST mode`);
-            return runGuestMode(prompt, { timeoutMs, log });
+            return runGuestMode(prompt, { timeoutMs, log, signal: options.signal, autoContinue: options.autoContinue });
         }
 
         // 2) الطلب الأول — 🔥 فشل مستوى الكوكيز (Header overflow / 401 / 403) → انتقال للضيف بدلاً من إسقاط المزوّد
@@ -477,7 +477,7 @@ async function askGeminiWeb(prompt, options = {}) {
             if (isCookieLevelFailure(sendErr) && options.allowGuestFallback && !context.geminiConv && !options.attachments?.length) {
                 if (log) log(`⚠️ فشل إرسال Gemini Web بالكوكيز (${sendErr.message}) — الانتقال الآن إلى وضع الضيف (بدون حساب)...`, 'warning');
                 console.warn(`[geminiWeb] authed send failed (${sendErr.message}) → switching to GUEST mode`);
-                return runGuestMode(prompt, { timeoutMs, log });
+                return runGuestMode(prompt, { timeoutMs, log, signal: options.signal, autoContinue: options.autoContinue });
             }
             throw sendErr;
         }
@@ -527,7 +527,7 @@ async function askGeminiWeb(prompt, options = {}) {
         }
     }
     console.warn(`[geminiWeb] entering GUEST mode (reason: ${isDummy ? 'no-cookies' : 'key-not-cookie-like'})`);
-    return runGuestMode(prompt, { timeoutMs, log });
+    return runGuestMode(prompt, { timeoutMs, log, signal: options.signal, autoContinue: options.autoContinue });
 }
 
 module.exports = { askGeminiWeb, GeminiWebAuthError, GUEST_TOKEN_SENTINEL, looksLikeGeminiCookies, consumeStreamGenerate, uploadGeminiAttachment, extractSessionTokens, getJar, getTokens, geminiHeaders, cookiesToString, mergeSetCookies };

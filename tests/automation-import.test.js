@@ -11,6 +11,7 @@ const uri=process.env.AUTOMATION_TEST_MONGO_URI;
 
 test('durable import survives partial writes, duplicates, private novels and corrupt storage', {skip:!uri},async()=>{
   const old=process.env.SCRAPER_API_SECRET;
+  const oldIngest=process.env.AUTOMATION_INGEST_SECRET;process.env.AUTOMATION_INGEST_SECRET='isolated-ingest-test';
   process.env.SCRAPER_API_SECRET='isolated-import-test';
   let failWrite=false,failRead=false;
   const docs=new Map();
@@ -31,7 +32,7 @@ test('durable import survives partial writes, duplicates, private novels and cor
     server=app.listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));
     const send=async(path,body,authorized=true)=>{
       const r=await fetch('http://127.0.0.1:'+server.address().port+'/api/automation/chapters/'+path,{
-        method:'POST',headers:{'content-type':'application/json',...(authorized?{authorization:process.env.SCRAPER_API_SECRET}:{})},
+        method:'POST',headers:{'content-type':'application/json',...(authorized?{authorization:process.env.SCRAPER_API_SECRET,'x-automation-ingest-secret':authorized==='legacy-only'?'':process.env.AUTOMATION_INGEST_SECRET}:{})},
         body:JSON.stringify(body)});
       return {status:r.status,body:await r.text().then(t=>{try{return JSON.parse(t)}catch{return t}})};
     };
@@ -39,6 +40,7 @@ test('durable import survives partial writes, duplicates, private novels and cor
       chapter:{number:1,title:'First',content:'A complete original chapter.'}};
     const identity={sourceUrl:input.sourceUrl,chapterNumber:1};
     assert.equal((await send('import',input,false)).status,403);
+    assert.equal((await send('import',input,'legacy-only')).status,403);
     failWrite=true;
     assert.equal((await send('import',input)).status,503);
     assert.equal((await Receipt.findOne()).persisted,false);
@@ -78,6 +80,7 @@ test('durable import survives partial writes, duplicates, private novels and cor
   } finally {
     if(server)await new Promise(r=>server.close(r));
     await mongoose.connection.dropDatabase();await mongoose.disconnect();
+    if(oldIngest===undefined)delete process.env.AUTOMATION_INGEST_SECRET;else process.env.AUTOMATION_INGEST_SECRET=oldIngest;
     if(old===undefined)delete process.env.SCRAPER_API_SECRET;else process.env.SCRAPER_API_SECRET=old;
   }
 });
