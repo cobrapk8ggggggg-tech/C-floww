@@ -1,0 +1,16 @@
+node_modules/
+backend/node_modules/
+web/node_modules/
+.expo/
+dist/
+*.log
+.DS_Store
+
+# Account credentials and local live test outputs
+.local-live/
+*cookie*.sh
+*cookie*.txt
+*session*.json
+.env
+.env.*
+!.env.example

@@ -1,0 +1,35 @@
+{
+  "name": "zeus-automation-coordinator",
+  "main": "index.js",
+  "compatibility_date": "2026-10-31",
+  "triggers": {
+    "crons": [
+      "*/2 * * * *"
+    ]
+  },
+  "vars": {
+    "AUTOMATION_ENABLED": "false",
+    "BACKEND_URL": "https://zeus-cfloww-staging.vercel.app"
+  },
+  "observability": {
+    "enabled": true
+  },
+  "queues": {
+    "producers": [
+      {
+        "binding": "AUTOMATION_QUEUE",
+        "queue": "zeus-chapter-automation"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "zeus-chapter-automation",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 8,
+        "max_concurrency": 2,
+        "retry_delay": 60
+      }
+    ]
+  }
+}
