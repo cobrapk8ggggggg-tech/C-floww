@@ -19,14 +19,18 @@ test('the real legacy resume route retains its ID and skips a translated chapter
  try{
   const started=new Date(Date.now()-12*60*1000);
   const written=new Date(+started+60000);
-  const novel=await Novel.create({title:'Legacy novel',author:'Test',chapters:[{number:2,title:'الفصل 2',createdAt:written}]});
+  const earlier=new Date(+started-60000);
+  const novel=await Novel.create({title:'Legacy novel',author:'Test',chapters:[{number:2,title:'الفصل 2',createdAt:earlier}]});
   const raw='这是一个原始章节。'.repeat(30);
   const translated='هذه ترجمة الفصل المخزنة، وفيها نص عربي كامل لا يتضمن كلمات أجنبية. '.repeat(8);
   await Receipt.create({_id:'test-raw',sourceUrl:'https://novelfire.net/legacy-resume',number:2,novelId:novel._id,title:'raw',content:raw,contentHash:S.hash(raw),persisted:true});
   const old=await Legacy.create({novelId:novel._id,status:'active',startTime:started,lastUpdate:started,updatedAt:written,
-   targetChapters:[2,3,4],totalToTranslate:3,translatedCount:0,logs:[{type:'success',message:'تم تحديث الفصل 2 وتاريخه',timestamp:written}]});
+   targetChapters:[2,3,4],totalToTranslate:3,translatedCount:0,logs:[
+    {type:'warning',message:'جلب محتوى الفصل 2',timestamp:started},
+    {type:'success',message:'نجحت الترجمة والمراجعة باستخدام المزوّد',timestamp:written}
+   ]});
   await Legacy.collection.updateOne({_id:old._id},{$set:{updatedAt:written}});
-  const documents=new Map([['2',{content:translated,lastUpdated:written}]]);
+  const documents=new Map([['2',{content:translated,lastUpdated:earlier}]]);
   const firestore={collection:()=>({doc:()=>({collection:()=>({doc:number=>({
    number,get:async()=>({exists:documents.has(number),data:()=>documents.get(number)})
   })})})}),runTransaction:async fn=>fn({get:ref=>ref.get(),set:(ref,data)=>documents.set(ref.number,{...documents.get(ref.number),...data})})};
@@ -53,6 +57,12 @@ test('the real legacy resume route retains its ID and skips a translated chapter
   const get=async path=>fetch(root+path,{headers:{'x-test-admin':'true'}});
   const oldView=await (await get('/api/translator/jobs/'+old.id)).json();
   assert.equal(oldView.status,'paused');
+  const preview=async()=>(await (await get('/api/translator/jobs/'+old.id+'?resumePreview=1')).json()).resumePreview;
+  assert.deepEqual(await preview(),{preservedChapter:2,nextChapter:3});
+  await Receipt.deleteOne({_id:'test-raw'});
+  assert.deepEqual(await preview(),{preservedChapter:null,nextChapter:2});
+  documents.set('3',{content:raw});
+  assert.deepEqual(await preview(),{preservedChapter:2,nextChapter:3});
   assert.equal((await Legacy.findById(old.id)).status,'active');
   const post=admin=>fetch(root+'/api/translator/start',{method:'POST',headers:{'content-type':'application/json','x-test-admin':String(admin)},body:JSON.stringify({jobId:old.id})});
   assert.equal((await post(false)).status,404);

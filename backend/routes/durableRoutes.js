@@ -339,7 +339,14 @@ module.exports=function mount(app,verifyAdmin,deps={}){
    if(!enabled())return next();
    const old=await legacyModel.findById(req.params.id).select('-apiKeys').lean();
    if(!old||(!user.admin&&!await Novel.exists({_id:old.novelId,authorId:user.id})))return res.sendStatus(404);
-   res.json(oldView(old));
+   const details=oldView(old);
+   if(req.query.resumePreview==='1'&&replaceLegacyStart()&&['active','paused','failed'].includes(old.status)&&old.targetChapters?.length){
+    const novel=await Novel.findById(old.novelId).select('chapters');
+    const targets=chapterNumbers({chapters:old.targetChapters});
+    const stored=kind==='glossary_extract'?null:await recoverSavedFirst(old,novel,targets,deps.firestore||require('../config/firebaseAdmin').db);
+    details.resumePreview={preservedChapter:stored,nextChapter:(stored===null?targets[0]:targets[1])??null};
+   }
+   res.json(details);
   }));
   const legacyControl=async(req,res,next,user)=>{
    if(!enabled())return next();
