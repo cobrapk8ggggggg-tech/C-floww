@@ -12,6 +12,13 @@ const {splitSource,parseCoveredReply}=require('../completeTranslation.service');
 const problem=(code,blocked=true)=>Object.assign(Error(code),{code,blocked});
 const artifactId=(c,kind)=>`${c.task.id}:${kind}`;
 async function read(id){const a=await S.Artifact.findById(id);if(!a||S.hash(a.text)!==a.hash)throw problem('checkpoint_missing_or_corrupt');return a.text;}
+async function projectTranslation(job,task,text,session){
+ const now=new Date();
+ await Mirror.updateOne({novelId:String(job.novelId),number:task.number},{$set:{content:text,updatedAt:now}},{upsert:true,session});
+ await Novel.updateOne({_id:job.novelId,'chapters.number':{$ne:task.number}},
+  {$push:{chapters:{number:task.number,title:`الفصل ${task.number}`,views:0,createdAt:now}},$set:{lastChapterUpdate:now}},{session});
+ await Novel.updateOne({_id:job.novelId,status:'خاصة'},{$set:{status:'مستمرة'}},{session});
+}
 function parseTerms(text){
  let t=text.trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'');
  if(/^json\s*[\r\n]/i.test(t))t=t.replace(/^json\s*/i,'');
@@ -181,6 +188,15 @@ function createProcessor(deps={}){
    }
    return S.advance(c,{state:'verified',stage:'done',publicationId:result.receiptId});
   }
+  if(task.stage==='legacy_publish'){
+   const checkpoint=artifactId(c,'legacy_publication');
+   const {contentHash}=JSON.parse(await read(checkpoint));
+   const db=firestore();if(!db)throw problem('firestore_not_configured');
+   const snap=await db.collection('novels').doc(String(job.novelId)).collection('chapters').doc(String(task.number)).get();
+   const text=snap.exists?snap.data().content:null;
+   if(typeof text!=='string'||S.hash(text)!==contentHash)throw problem('legacy_publication_changed');
+   return S.advance(c,{state:'verified',stage:'done',publicationId:checkpoint},[],session=>projectTranslation(job,task,text,session));
+  }
   if(task.stage==='account_prepare'){
    if(!deps.longWorker)throw Object.assign(problem('long_worker_required',false),{requiresLongWorker:true});
    await (deps.accountSetup||require('./accountSetup'))(job.config.setupProviderId);
@@ -303,11 +319,7 @@ function createProcessor(deps={}){
    });
    const snap=await ref.get();
    if(!snap.exists||snap.data().automationHash!==pub.hash||S.hash(snap.data().content)!==pub.hash)throw problem('publication_readback_failed',false);
-   return S.advance(c,{state:'verified',stage:'done'},[],async session=>{
-    await Mirror.updateOne({novelId:String(job.novelId),number:task.number},{$set:{content:text,updatedAt:new Date()}},{upsert:true,session});
-    await Novel.updateOne({_id:job.novelId,'chapters.number':{$ne:task.number}},{$push:{chapters:{number:task.number,title:`الفصل ${task.number}`,views:0,createdAt:new Date()}}},{session});
-    await Novel.updateOne({_id:job.novelId,status:'خاصة'},{$set:{status:'مستمرة'}},{session});
-   });
+   return S.advance(c,{state:'verified',stage:'done'},[],session=>projectTranslation(job,task,text,session));
   }
   throw problem('unknown_stage');
  }

@@ -9,7 +9,7 @@ const Legacy=require('../backend/models/translationJob.model');
 const Receipt=require('../backend/models/importChapter.model');
 const uri=process.env.AUTOMATION_TEST_REPLICA_URI;
 
-test('the real legacy resume route retains its ID and skips a translated chapter proven saved',{skip:!uri},async()=>{
+test('the real legacy resume route publishes a saved chapter and continues without another translation call',{skip:!uri},async()=>{
  await mongoose.connect(uri,{dbName:'zeus_automation_legacy_resume_'+Date.now()});
  const previous=process.env.DURABLE_ENGINE_V2;
  const previousSecret=process.env.AUTOMATION_SECRET;
@@ -23,11 +23,13 @@ test('the real legacy resume route retains its ID and skips a translated chapter
   const novel=await Novel.create({title:'Legacy novel',author:'Test',chapters:[{number:2,title:'الفصل 2',createdAt:earlier}]});
   const raw='这是一个原始章节。'.repeat(30);
   const translated='هذه ترجمة الفصل المخزنة، وفيها نص عربي كامل لا يتضمن كلمات أجنبية. '.repeat(8);
-  await Receipt.create({_id:'test-raw',sourceUrl:'https://novelfire.net/legacy-resume',number:2,novelId:novel._id,title:'raw',content:raw,contentHash:S.hash(raw),persisted:true});
+  const original={_id:'test-raw',sourceUrl:'https://novelfire.net/legacy-resume',number:2,novelId:novel._id,title:'raw',content:raw,contentHash:S.hash(raw),persisted:true};
+  await Receipt.create(original);
   const old=await Legacy.create({novelId:novel._id,status:'active',startTime:started,lastUpdate:started,updatedAt:written,
    targetChapters:[2,3,4],totalToTranslate:3,translatedCount:0,logs:[
     {type:'warning',message:'جلب محتوى الفصل 2',timestamp:started},
-    {type:'success',message:'نجحت الترجمة والمراجعة باستخدام المزوّد',timestamp:written}
+    {type:'success',message:'نجحت الترجمة والمراجعة باستخدام المزوّد',timestamp:written},
+    {type:'success',message:'تم إضافة/تحديث 3 مصطلح للمسرد',timestamp:written}
    ]});
   await Legacy.collection.updateOne({_id:old._id},{$set:{updatedAt:written}});
   const documents=new Map([['2',{content:translated,lastUpdated:earlier}]]);
@@ -63,6 +65,11 @@ test('the real legacy resume route retains its ID and skips a translated chapter
   assert.deepEqual(await preview(),{preservedChapter:null,nextChapter:2});
   documents.set('3',{content:raw});
   assert.deepEqual(await preview(),{preservedChapter:2,nextChapter:3});
+  await Novel.updateOne({_id:novel._id},{$pull:{chapters:{number:2}}});
+  assert.deepEqual(await preview(),{preservedChapter:null,nextChapter:2});
+  await Receipt.create(original);
+  documents.get('2').importHash=original.contentHash;
+  assert.deepEqual(await preview(),{preservedChapter:2,nextChapter:3,publicationPending:true});
   assert.equal((await Legacy.findById(old.id)).status,'active');
   const post=admin=>fetch(root+'/api/translator/start',{method:'POST',headers:{'content-type':'application/json','x-test-admin':String(admin)},body:JSON.stringify({jobId:old.id})});
   assert.equal((await post(false)).status,404);
@@ -71,9 +78,17 @@ test('the real legacy resume route retains its ID and skips a translated chapter
   assert.equal((await response.json()).jobId,old.id);
   assert.equal((await post(true)).status,200);
   const current=await S.Job.findById(old.id);
-  assert.deepEqual(current.chapters,[3,4]);
-  assert.equal(current.config.priorCompleted,1);
+  assert.deepEqual(current.chapters,[2,3,4]);
+  assert.equal(current.config.priorCompleted,0);
   assert.equal((await Legacy.findById(old.id)).status,'paused');
+  assert.equal((await S.Task.findOne({jobId:old.id,number:2})).stage,'legacy_publish');
+  const tick=()=>fetch(root+'/api/automation/worker/step',{method:'POST',headers:{'x-automation-secret':'fixture-coordinator'}});
+  const published=await tick();
+  assert.equal(published.status,200);
+  assert.equal((await published.json()).stage,'legacy_publish');
+  assert.equal(calls,0);
+  assert.equal((await Novel.findById(novel.id)).chapters[0].number,2);
+  assert.equal((await S.Task.findOne({jobId:old.id,number:2})).state,'verified');
   const resumedView=await (await get('/api/translator/jobs/'+old.id)).json();
   assert.equal(resumedView.totalToTranslate,3);
   assert.equal(resumedView.translatedCount,1);
@@ -85,7 +100,7 @@ test('the real legacy resume route retains its ID and skips a translated chapter
   assert.equal(rows.filter(row=>row.id===old.id).length,1);
   for(let i=0;i<35&&(await S.Job.findById(old.id)).status!=='completed';i++){
    await S.Job.updateOne({_id:old.id},{$set:{nextRunAt:new Date(0)}});
-   const step=await fetch(root+'/api/automation/worker/step',{method:'POST',headers:{'x-automation-secret':'fixture-coordinator'}});
+   const step=await tick();
    assert.equal(step.status,200);
    assert.notEqual((await step.json()).ok,false);
   }

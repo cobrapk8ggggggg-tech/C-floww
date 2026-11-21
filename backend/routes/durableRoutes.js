@@ -97,7 +97,7 @@ module.exports=function mount(app,verifyAdmin,deps={}){
    if(kind==='pure_translate')glossary=await Glossary.find({novelId:novel._id}).select('term translation -_id').lean();
   }
   const result=await S.createJob({payload,config,glossary,ownerId:user.id,idempotencyKey:key,requestFingerprint:fingerprint,
-   retireLegacy:transfer?.retire,
+   retireLegacy:transfer?.retire,recoveredChapter:transfer?.recoveredChapter,
    novelKey:novel?'novel:'+novel.id:'source:'+S.hash(payload.sourceUrl)});
   if(result.created&&config.watchRequested&&novel)await Novel.updateOne({_id:novel._id},{$set:{isWatched:true}});
   if(wake)await wakeCoordinator();
@@ -290,7 +290,9 @@ module.exports=function mount(app,verifyAdmin,deps={}){
     if(old.status==='completed')return res.json({jobId:old.id,message:'Job completed'});
     if(!Number.isFinite(age)||age<staleAfterMs)return res.status(409).json({error:'legacy_worker_still_within_deadline'});
     const targets=chapterNumbers({chapters:[...old.targetChapters]});
-    const stored=kind==='glossary_extract'?null:await recoverSavedFirst(old,novel,targets,deps.firestore||require('../config/firebaseAdmin').db);
+    const recovery=kind==='glossary_extract'?null:await recoverSavedFirst(old,novel,targets,
+     deps.firestore||require('../config/firebaseAdmin').db,{smart:kind==='smart_translate'});
+    const stored=recovery&&!recovery.publication?recovery.number:null;
     const remaining=stored===null?targets:targets.slice(1);
     const priorCompleted=Number(kind==='glossary_extract'?old.processedCount:old.translatedCount)||0;
     const filter={_id:old._id,status:old.status,updatedAt:old.updatedAt,targetChapters:old.targetChapters};
@@ -305,7 +307,8 @@ module.exports=function mount(app,verifyAdmin,deps={}){
      if(retired.modifiedCount!==1)throw Object.assign(Error('legacy_job_changed'),{status:409});
     };
     const continued=await create({kind,novelId:String(novel._id),chapters:remaining,sourceSelection:'current_content',chapterDelayMs:old.chapterDelayMs},
-     user,'legacy-resume:'+old.id,{fromLegacyControl:true,transfer:{old,retire,priorCompleted:priorCompleted+(stored===null?0:1),priorLastChapter:stored||old.currentChapter}});
+     user,'legacy-resume:'+old.id,{fromLegacyControl:true,transfer:{old,retire,priorCompleted:priorCompleted+(stored===null?0:1),
+      priorLastChapter:stored||old.currentChapter,recoveredChapter:recovery?.publication}});
     return res.json({jobId:continued.job.id,message:'Durable job resumed'});
    }
    let body={...req.body,kind,sourceSelection:req.body.sourceSelection||'current_content'};
@@ -343,8 +346,10 @@ module.exports=function mount(app,verifyAdmin,deps={}){
    if(req.query.resumePreview==='1'&&replaceLegacyStart()&&['active','paused','failed'].includes(old.status)&&old.targetChapters?.length){
     const novel=await Novel.findById(old.novelId).select('chapters');
     const targets=chapterNumbers({chapters:old.targetChapters});
-    const stored=kind==='glossary_extract'?null:await recoverSavedFirst(old,novel,targets,deps.firestore||require('../config/firebaseAdmin').db);
-    details.resumePreview={preservedChapter:stored,nextChapter:(stored===null?targets[0]:targets[1])??null};
+    const recovery=kind==='glossary_extract'?null:await recoverSavedFirst(old,novel,targets,
+     deps.firestore||require('../config/firebaseAdmin').db,{smart:kind==='smart_translate'});
+    details.resumePreview={preservedChapter:recovery?.number??null,nextChapter:targets[recovery?1:0]??null,
+     ...(recovery?.publication?{publicationPending:true}:{})};
    }
    res.json(details);
   }));

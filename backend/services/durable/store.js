@@ -24,14 +24,21 @@ async function createJob(input){
  const requestHash=input.requestFingerprint||hash(input.payload);
  const requestKey=input.idempotencyKey?hash(input.ownerId+':'+input.idempotencyKey):undefined;
  // Index creation must finish before a new deployment accepts its first job.
- await Promise.all([Job.init(),Task.init(),...(input.glossary===undefined?[]:[Artifact.init()])]);
+ await Promise.all([Job.init(),Task.init(),...(input.glossary===undefined&&!input.recoveredChapter?[]:[Artifact.init()])]);
  if(requestKey){const old=await Job.findOne({requestKey});if(old){if(old.requestHash!==requestHash)throw Object.assign(Error('idempotency_conflict'),{status:409});return {job:old,created:false};}}
  try{return await transaction(async session=>{
   const [job]=await Job.create([{...input.payload,engineVersion:2,ownerId:input.ownerId,requestKey,requestHash,
    novelKey:input.novelKey,...(input.payload.kind==='scrape'?{sourceKey:hash(input.payload.sourceUrl)}:{}),config:input.config,status:'queued'}],{session});
   const tasks=job.config?.catalogPlan?[{jobId:job._id,number:0,ordinal:-1,stage:'catalog'}]:
-   job.chapters.map((number,ordinal)=>({jobId:job._id,number,ordinal}));
-  await Task.insertMany(tasks,{session});
+   job.chapters.map((number,ordinal)=>({jobId:job._id,number,ordinal,
+    ...(input.recoveredChapter?.number===number?{stage:'legacy_publish'}:{})}));
+  const created=await Task.insertMany(tasks,{session});
+  if(input.recoveredChapter){
+   const task=created.find(t=>t.stage==='legacy_publish');
+   if(!task)throw Error('missing_recovered_chapter');
+   await immutable(task.id+':legacy_publication',JSON.stringify(input.recoveredChapter),
+    {jobId:job._id,taskId:task._id,kind:'legacy_publication'},session);
+  }
   if(input.glossary!==undefined)await immutable(job.id+':glossary',JSON.stringify(input.glossary),{jobId:job._id,kind:'glossary_snapshot'},session);
   if(input.retireLegacy)await input.retireLegacy(session);
   return {job,created:true};
