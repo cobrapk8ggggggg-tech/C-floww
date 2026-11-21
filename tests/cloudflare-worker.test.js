@@ -31,6 +31,7 @@ test('Cloudflare Queue chains a successful authorized step and retries transient
   let acked=0,retried=0;
   try{
     global.fetch=async(url,options)=>{
+      assert.equal(options.redirect,'manual');
       if(String(url).endsWith('/queue-permit'))return {ok:true,json:async()=>({allowed:true})};
       calls.push({url:String(url),method:options.method,secret:options.headers['x-automation-secret']});
       return {ok:true,json:async()=>String(url).endsWith('/ready')?{ok:true,kinds:['pure','smart']}:{ok:true,completed:false}};

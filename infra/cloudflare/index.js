@@ -20,16 +20,16 @@ async function runStep(env,kind) {
   const response=await fetch(url,{
     method:'POST',
     headers:{'x-automation-secret':coordinatorSecret(env)},
-    redirect:'error',
+    redirect:'manual',
     signal:AbortSignal.timeout(270000)
   });
-  if(!response.ok)throw new Error('Backend step '+kind+' failed: HTTP '+response.status);
+  if(!response.ok)throw Object.assign(new Error('Backend step '+kind+' failed: HTTP '+response.status),{upstreamStatus:response.status});
   return response.json();
 }
 
 async function permit(env,cost){
  const url=new URL('/api/automation/worker/queue-permit',env.BACKEND_URL);
- const r=await fetch(url,{method:'POST',redirect:'error',headers:{'content-type':'application/json','x-automation-secret':coordinatorSecret(env)},
+ const r=await fetch(url,{method:'POST',redirect:'manual',headers:{'content-type':'application/json','x-automation-secret':coordinatorSecret(env)},
   body:JSON.stringify({cost}),signal:AbortSignal.timeout(12000)});
  if(!r.ok)return false;
  return (await r.json()).allowed===true;
@@ -61,7 +61,13 @@ export default {
     if(path==='/wake'&&request.method==='POST'){
       if(!await authorized(request,env))return new Response('Unauthorized',{status:401});
       if(!isEnabled(env))return Response.json({ok:true,disabled:true});
-      try{await wake(env);return Response.json({ok:true});}catch{return Response.json({ok:false},{status:503});}
+      try {
+        await wake(env);
+        return Response.json({ok:true});
+      } catch (error) {
+        console.error('ZEUS wake failed:', error.name, error.message);
+        return Response.json({ok:false,upstreamStatus:error.upstreamStatus||null},{status:503});
+      }
     }
     if(request.method!=='GET')return new Response('Method Not Allowed',{status:405});
     if(path==='/health')return Response.json({
