@@ -15,6 +15,8 @@ function view(j){return {id:j.id,jobId:j.id,title:j.label||j.sourceUrl||'',novel
  lastError:j.lastError,blockedCode:j.blockedCode,updatedAt:j.updatedAt,finishedAt:j.finishedAt,engineVersion:2,workerClass:j.workerClass};}
 module.exports=function mount(app,verifyAdmin,deps={}){
  const enabled=()=>process.env.DURABLE_ENGINE_V2==='true';
+ const replaceLegacyStart=()=>enabled()&&(!require('../config/automationIsolation').usesExistingDatabases() ||
+  process.env.AUTOMATION_DURABLE_LEGACY_START==='true');
  const processor=deps.processor||createProcessor();
  const identity=deps.identity||async function(req){
   if(!idOK(req.user?.id))throw Object.assign(Error('Unauthorized'),{status:401});
@@ -169,6 +171,12 @@ module.exports=function mount(app,verifyAdmin,deps={}){
  }));
  app.post('/api/automation/worker/ready',wrap(async(req,res)=>{
   if(!validCoordinatorSecret(req))return res.sendStatus(401);
+  if(req.body?.verifyStorage===true){
+   const db=require('../config/firebaseAdmin').db;
+   if(!db)return res.status(503).json({error:'Firestore unavailable'});
+   await require('../services/durable/deadline')(8000,()=>db.collection('novels').limit(1).select().get());
+   return res.json({ok:true,firestoreReadable:true});
+  }
   const kinds=[];
   if(enabled()&&await S.Job.exists({engineVersion:2,workerClass:{$ne:'long'},status:{$in:['queued','running','retry_wait']},leaseUntil:{$lte:new Date()},nextRunAt:{$lte:new Date()}}))kinds.push('v2');
   if(await S.Job.exists({engineVersion:{$ne:2},status:{$in:['queued','running']},leaseUntil:{$lte:new Date()},nextRunAt:{$lte:new Date()}}))kinds.push('scrape');
@@ -184,7 +192,7 @@ module.exports=function mount(app,verifyAdmin,deps={}){
    novelId:j.novelId,totalToTranslate:j.chapters.length,totalToExtract:j.chapters.length,translatedCount:j.successCount,processedCount:j.successCount,
    targetChapters:(await S.Task.find({jobId:j._id,state:{$ne:'verified'}}).sort({ordinal:1})).map(t=>t.number),logs:[]});
   app.post(prefix+'/start',verifyAdmin,wrap(async(req,res,next)=>{
-   if(!enabled())return next();const user=await identity(req);
+   if(!replaceLegacyStart())return next();const user=await identity(req);
    if(req.body.jobId){
     const j=await S.Job.findOne({_id:req.body.jobId,kind,engineVersion:2,...scope(user)});if(!j)return res.status(409).json({error:'legacy_job_requires_reconciliation'});
     const resumed=await S.transition(j.id,'resume',scope(user));return resumed?res.json({jobId:j.id,message:'Job resumed'}):res.status(409).json({error:'Invalid transition'});

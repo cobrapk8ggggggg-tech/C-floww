@@ -156,8 +156,9 @@ function createProcessor(deps={}){
    await S.resource(c,'source:'+new URL(job.sourceUrl).hostname);
    const result=deps.scrape?await deps.scrape(job,task):await (async()=>{
     const base=process.env.SCRAPER_SERVICE_URL?.replace(/\/+$/,'');
-    if(!base||!process.env.SCRAPER_API_SECRET)throw problem('scraper_not_configured');
-    const res=await fetch(base+'/automation/scrape-chapter',{method:'POST',headers:{'content-type':'application/json',authorization:process.env.SCRAPER_API_SECRET,'x-automation-ingest-secret':process.env.AUTOMATION_INGEST_SECRET||''},
+    const legacySecret=process.env.SCRAPER_API_SECRET, ingest=process.env.AUTOMATION_INGEST_SECRET;
+    if(!base||!ingest||(!legacySecret&&!require('../../config/automationIsolation').usesExistingDatabases()))throw problem('scraper_not_configured');
+    const res=await fetch(base+'/automation/scrape-chapter',{method:'POST',redirect:'error',headers:{'content-type':'application/json',...(legacySecret?{authorization:legacySecret}:{}),'x-automation-ingest-secret':ingest},
      body:JSON.stringify({sourceUrl:job.sourceUrl,chapterNumber:task.number,jobId:job.id}),signal:AbortSignal.timeout(80000)});
     if(!res.ok)throw Object.assign(Error('scraper_unavailable'),{code:'scraper_unavailable',requiresLongWorker:res.status===504,blocked:[400,401,403,422].includes(res.status)});
     return res.json();

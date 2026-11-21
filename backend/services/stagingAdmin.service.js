@@ -5,6 +5,7 @@ const Settings=require('../models/settings.model');
 let pending;
 async function provision(env=process.env){
  if(env.DURABLE_ENGINE_V2!=='true'||env.AUTOMATION_STAGING_BOOTSTRAP!=='true')return false;
+ if(require('../config/automationIsolation').usesExistingDatabases(env))throw Error('isolated_database_required');
  if(!/^zeus_automation_/.test(User.db.name||''))throw Error('isolated_database_required');
  const email=String(env.STAGING_ADMIN_EMAIL||'').trim().toLowerCase(),password=env.STAGING_ADMIN_PASSWORD;
  if(!/^\S+@\S+\.\S+$/.test(email)||email.length>254||typeof password!=='string'||password.length<12||password.length>256)throw Error('staging_admin_credentials_required');

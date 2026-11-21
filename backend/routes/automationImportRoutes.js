@@ -1,5 +1,6 @@
 'use strict';
 const crypto = require('node:crypto');
+const authenticateIngest = require('../services/automationIngestAuth');
 const {sourceUrl} = require('./automationRoutes').__test;
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
 const key = (source, number) => hash(source+'\n'+number);
@@ -11,17 +12,10 @@ module.exports = function mount(app, deps = {}) {
   const Mirror = deps.Mirror || require('../models/chapterContentMirror.model');
   const firestore = deps.firestore || require('../config/firebaseAdmin').db;
   function auth(req,res,next) {
-    const expected = process.env.SCRAPER_API_SECRET;
-    const actual = req.get('authorization') || '';
-    if (!expected) return res.status(503).json({error:'Scraper credential not configured'});
-    const a=Buffer.from(actual), b=Buffer.from(expected);
-    if(a.length!==b.length || !crypto.timingSafeEqual(a,b))return res.sendStatus(403);
-    const ingest=process.env.AUTOMATION_INGEST_SECRET, supplied=req.get('x-automation-ingest-secret')||'';
-    if(!ingest)return res.status(503).json({error:'Ingest credential not configured'});
-    const x=Buffer.from(ingest),y=Buffer.from(supplied);
-    if(x.length!==y.length||!crypto.timingSafeEqual(x,y))return res.sendStatus(403);
-    if(!firestore)return res.status(503).json({error:'Isolated Firestore unavailable'});
-    next();
+    return authenticateIngest(req,res,()=>{
+      if(!firestore)return res.status(503).json({error:'Firestore unavailable'});
+      next();
+    });
   }
   const refFor = r => firestore.collection('novels').doc(String(r.novelId))
     .collection('chapters').doc(String(r.number));

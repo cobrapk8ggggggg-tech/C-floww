@@ -52,19 +52,23 @@ app.get('/api/automation/health', async (_req, res) => {
   return res.json({
     service: 'zeus-cfloww', status: 'ok', databaseConfigured: Boolean(process.env.MONGODB_URI),
     databaseConnected: mongoose.connection.readyState === 1,
-    databaseIsolated: mongoose.connection.readyState === 1 && mongoose.connection.name === configuredStagingDb,
+    databaseIsolated: !useExistingDatabases && mongoose.connection.readyState === 1 && mongoose.connection.name === configuredDb,
     firestoreConfigured: Boolean(require('./config/firebaseAdmin').db),
     firestoreDatabase: require('./config/automationIsolation').firestoreDatabase(),
-    automationConfigured: Boolean(process.env.AUTOMATION_SECRET && process.env.SCRAPER_SERVICE_URL && process.env.SCRAPER_API_SECRET && process.env.AUTOMATION_INGEST_SECRET),
+    automationConfigured: Boolean(process.env.AUTOMATION_SECRET && process.env.SCRAPER_SERVICE_URL &&
+      (useExistingDatabases || process.env.SCRAPER_API_SECRET) && process.env.AUTOMATION_INGEST_SECRET),
+    usesExistingDatabases: useExistingDatabases,
     revision: process.env.VERCEL_GIT_COMMIT_SHA || 'local',
     durableEngine: process.env.DURABLE_ENGINE_V2 === 'true'
 });
 });
 
 // Await bounded connection attempts inside requests; no background retry loop.
-const configuredStagingDb = require('./config/automationIsolation').mongoDatabase();
+const storage = require('./config/automationIsolation');
+const useExistingDatabases = storage.usesExistingDatabases();
+const configuredDb = storage.mongoDatabase();
 const connectToDatabase = require('./services/databaseConnection.service')(mongoose, {
-    uri: process.env.MONGODB_URI, dbName: configuredStagingDb
+    uri: process.env.MONGODB_URI, dbName: configuredDb
 });
 app.use(async (_req, res, next) => {
     try {
