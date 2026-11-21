@@ -3,7 +3,7 @@ const crypto = require('node:crypto');
 const authenticateIngest = require('../services/automationIngestAuth');
 const {sourceUrl} = require('./automationRoutes').__test;
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
-const key = (source, number) => hash(source+'\n'+number);
+const key = require('../models/importChapter.model').idForSource;
 
 // Dependency injection also lets the contract run against an isolated MongoDB.
 module.exports = function mount(app, deps = {}) {

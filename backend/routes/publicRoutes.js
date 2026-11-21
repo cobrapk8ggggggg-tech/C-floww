@@ -16,6 +16,7 @@ try {
 // Models
 const User = require('../models/user.model.js');
 const Novel = require('../models/novel.model.js');
+const ImportedChapter = require('../models/importChapter.model.js');
 const NovelLibrary = require('../models/novelLibrary.model.js'); 
 const Comment = require('../models/comment.model.js');
 const Settings = require('../models/settings.model.js'); 
@@ -30,14 +31,14 @@ function escapeRegExp(string) {
 }
 
 // Helper to get user role inside public route (Safely)
-const getUserRole = (req) => {
+const getVerifiedViewer = (req) => {
     try {
         const token = req.headers.authorization?.split(' ')[1];
-        if (!token) return 'guest';
-        const decoded = jwt.decode(token); 
-        return decoded?.role || 'guest';
-    } catch (e) { return 'guest'; }
+        if (!token) return null;
+        return jwt.verify(token, process.env.JWT_SECRET, { algorithms: ['HS256'] });
+    } catch (e) { return null; }
 };
+const getUserRole = req => getVerifiedViewer(req)?.role || 'guest';
 
 // Helper to check and update status automatically
 const ZEUS_SECRET = "Z3uS_N0v3l_2026_S3cr3t_K3y";
@@ -99,7 +100,7 @@ function safeReplaceAll(content, original, replacement) {
     }
 }
 
-module.exports = function(app, verifyToken, upload) {
+module.exports = function(app, verifyToken, upload, { firestore: chapterStore = firestore } = {}) {
 
     // =========================================================
     // 📂 CATEGORIES API (Managed + Dynamic fallback)
@@ -898,7 +899,8 @@ module.exports = function(app, verifyToken, upload) {
             const { novelId, chapterId } = req.params;
             if (!mongoose.Types.ObjectId.isValid(novelId)) return res.status(404).json({ message: 'Invalid ID' });
 
-            const role = getUserRole(req);
+            const viewer = getVerifiedViewer(req);
+            const role = viewer?.role || 'guest';
             const isId = mongoose.Types.ObjectId.isValid(chapterId);
 
             // 🔥 LIGHTNING FAST OPTIMIZED FETCH 🔥
@@ -908,6 +910,8 @@ module.exports = function(app, verifyToken, upload) {
                 {
                     $project: {
                         status: 1,
+                        sourceUrl: 1,
+                        sourceChaptersCount: 1,
                         chaptersCount: { $size: "$chapters" },
                         chapter: {
                             $filter: {
@@ -929,7 +933,21 @@ module.exports = function(app, verifyToken, upload) {
                 return res.status(403).json({ message: "Access Denied" });
             }
 
-            const chapterMeta = novel.chapter && novel.chapter[0];
+            let chapterMeta = novel.chapter?.[0];
+            let totalAvailable = novel.chaptersCount;
+            if (!chapterMeta && role === 'admin' && novel.sourceUrl && /^[1-9]\d{0,6}$/.test(chapterId) &&
+                Number(chapterId) <= 1_000_000 && mongoose.isValidObjectId(viewer.id) &&
+                await User.exists({ _id: viewer.id, role: 'admin' })) {
+                const number = Number(chapterId);
+                const imported = await ImportedChapter.findOne({
+                    _id: ImportedChapter.idForSource(novel.sourceUrl, number), novelId, persisted: true
+                }).select('title createdAt').lean();
+                if (imported) {
+                    chapterMeta = { _id: chapterId, number, title: imported.title, createdAt: imported.createdAt, views: 0 };
+                    totalAvailable = Math.max(totalAvailable, novel.sourceChaptersCount || number);
+                    res.set('Cache-Control', 'private, no-store');
+                }
+            }
             if (!chapterMeta) return res.status(404).json({ message: 'Chapter metadata not found' });
 
             if (role !== 'admin') {
@@ -943,7 +961,7 @@ module.exports = function(app, verifyToken, upload) {
             // 🔥 القراءة عبر الطبقة الموحّدة (ذاكرة → Firestore → مرآة MongoDB)
             // تصلح: RESOURCE_EXHAUSTED (نفاد حصة Firestore) الذي كان يفشل كل الفصول بـ HTTP 500
             try {
-                const fetched = await chapterMirror.fetchChapterContent(firestore, novelId, chapterMeta.number);
+                const fetched = await chapterMirror.fetchChapterContent(chapterStore, novelId, chapterMeta.number);
                 if (fetched != null) content = fetched;
             } catch (contentError) {
                 if (String(contentError?.message || '').includes('FIRESTORE_NOT_INITIALIZED')) {
@@ -1036,10 +1054,6 @@ module.exports = function(app, verifyToken, upload) {
                     }
                 }
             } catch (cleanerErr) {}
-
-            // Calculate total available chapters (approximate if we don't want to fetch all)
-            // For now, we'll use the novel.chaptersCount we projected
-            let totalAvailable = novel.chaptersCount;
 
             res.json({ 
                 ...chapterMeta, 

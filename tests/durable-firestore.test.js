@@ -22,9 +22,12 @@ test('real Firestore emulator and MongoDB: import/readback, smart publish and re
  const oldFree=process.env.AUTOMATION_FREE_PROVIDER_IDS;process.env.AUTOMATION_FREE_PROVIDER_IDS='test';
  const oldIngest=process.env.AUTOMATION_INGEST_SECRET;process.env.AUTOMATION_INGEST_SECRET='isolated-ingest-test';
  const secret=process.env.SCRAPER_API_SECRET;process.env.SCRAPER_API_SECRET='test-private-import';
+ const oldJwt=process.env.JWT_SECRET;process.env.JWT_SECRET='isolated-test-reader-signature';
  let novelId;
  try{
   const http=express();http.use(express.json());require('../backend/routes/automationImportRoutes')(http,{firestore:db});
+  const multer=require('../backend/node_modules/multer');
+  require('../backend/routes/publicRoutes')(http,(_req,_res,next)=>next(),multer(),{firestore:db});
   server=http.listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));
   const source='https://novelfire.net/isolated-'+Date.now();
   const post=async(path,body)=>{const r=await fetch(`http://127.0.0.1:${server.address().port}/api/automation/chapters/${path}`,{
@@ -34,6 +37,19 @@ test('real Firestore emulator and MongoDB: import/readback, smart publish and re
   const saved=await post('import',input);novelId=saved.novelId;
   assert.equal(saved.persisted,true);assert.equal((await post('check',{sourceUrl:source,chapterNumber:1})).persisted,true);
   await post('import',input);assert.equal(await Receipt.countDocuments(),1);
+  const User=require('../backend/models/user.model');
+  const reader=await User.create({googleId:'isolated-reader',email:'reader@example.invalid',name:'Test reader',role:'admin'});
+  const jwt=require('../backend/node_modules/jsonwebtoken');
+  const readerUrl=`http://127.0.0.1:${server.address().port}/api/novels/${novelId}/chapters/1`;
+  const read=key=>fetch(readerUrl,{headers:{authorization:'Bearer '+jwt.sign({id:reader.id,role:'admin'},key)}});
+  assert.equal((await fetch(readerUrl)).status,403);
+  assert.equal((await read('other-test-signature')).status,403);
+  const response=await read(process.env.JWT_SECRET);
+  assert.equal(response.status,200);
+  assert.equal(response.headers.get('cache-control'),'private, no-store');
+  const chapter=await response.json();
+  assert.equal(chapter.title,'First');
+  assert.equal(chapter.content,content);
   const novel=await Novel.findById(novelId);
   const j=(await S.createJob({payload:{kind:'smart_translate',novelId:novel._id,chapters:[1]},ownerId:'test',novelKey:'novel:'+novelId,config:{providerId:'test',model:'test'}})).job;
   let calls=0;
@@ -71,5 +87,6 @@ test('real Firestore emulator and MongoDB: import/readback, smart publish and re
   if(oldFree===undefined)delete process.env.AUTOMATION_FREE_PROVIDER_IDS;else process.env.AUTOMATION_FREE_PROVIDER_IDS=oldFree;
   if(oldIngest===undefined)delete process.env.AUTOMATION_INGEST_SECRET;else process.env.AUTOMATION_INGEST_SECRET=oldIngest;
   if(secret===undefined)delete process.env.SCRAPER_API_SECRET;else process.env.SCRAPER_API_SECRET=secret;
+  if(oldJwt===undefined)delete process.env.JWT_SECRET;else process.env.JWT_SECRET=oldJwt;
  }
 });
