@@ -36,7 +36,8 @@ test('strict terminology parsing distinguishes valid empty results from invalid 
  assert.throws(()=>parseTerms('[{"term":"x"}]'));
 });
 test('durable engine with real replica-set transactions', {skip:!uri},async t=>{
- await mongoose.connect(uri,{dbName:'zeus_automation_v2_'+Date.now()});
+ const mongoOptions=require('../backend/config/mongoOptions');
+ await mongoose.connect(uri,mongoOptions('zeus_automation_v2_'+Date.now()));
  await Promise.all(models.map(m=>m.init()));
  try{
   await t.test('immutable target list, idempotent create and payload mismatch',async()=>{
