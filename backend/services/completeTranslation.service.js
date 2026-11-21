@@ -43,6 +43,53 @@ function parseCoveredReply(reply, units, nonce) {
         return text;
     });
 }
+function durableUnits(source, maxChars, groupFrom) {
+    const units = splitSource(source, maxChars);
+    if (groupFrom == null) return units;
+    const grouped = units.slice(0, groupFrom).map(unit => unit.text);
+    let batch = [];
+    let size = 0;
+    for (const unit of units.slice(groupFrom)) {
+        if (batch.length && (batch.length === 8 || size + 2 + unit.text.length > maxChars)) {
+            grouped.push(batch.join('\n\n'));
+            batch = [];
+            size = 0;
+        }
+        size += (batch.length ? 2 : 0) + unit.text.length;
+        batch.push(unit.text);
+    }
+    if (batch.length) grouped.push(batch.join('\n\n'));
+    return grouped.map((text, i) => ({ id: String(i + 1).padStart(6, '0'), text }));
+}
+
+function parseDurableReply(reply, unit, nonce) {
+    const end = `[[END_${nonce}]]`;
+    let value = reply.trim();
+    const fence = value.match(/^```[^\r\n]*\r?\n([\s\S]+)\r?\n```$/);
+    if (fence) value = fence[1].trim();
+    if (!value.endsWith(end) || value.indexOf(end) !== value.lastIndexOf(end)) {
+        throw new IncompleteTranslationError('Missing or repeated translation end marker');
+    }
+    let arabic = value.slice(0, -end.length).trim();
+    // A single-unit request identifies the source independently. An omitted
+    // opener or the model's equivalent single-bracket tag does not lose a unit.
+    const opener = arabic.match(/^\[{1,2}([a-z\d_]{1,32})\]{1,2}\s*/i);
+    const idMatches = id => /^\d{1,6}$/.test(id) && Number(id) === Number(unit.id);
+    if (opener) {
+        const label = opener[1];
+        const suffix = label.startsWith(`${nonce}_`) ? label.slice(nonce.length + 1) : '';
+        if (label === nonce || idMatches(label) || /^\d{1,6}$|^NNNNNN$/.test(suffix)) arabic = arabic.slice(opener[0].length);
+    }
+    if (/\[\[[a-z\d_]{1,32}\]\]|```/i.test(arabic) || /^\[[a-z\d_]{8,32}\]/i.test(arabic)) {
+        throw new IncompleteTranslationError('Unexpected translation markers');
+    }
+    const paragraphs = unit.text.split(/\n\s*\n/);
+    const lines = arabic.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    if (lines.length < paragraphs.length || paragraphs.some(p => !/\p{L}/u.test(p) && !lines.includes(p.trim()))) {
+        throw new IncompleteTranslationError('Missing translated paragraphs or separators');
+    }
+    return parseCoveredReply(`[[${nonce}_${unit.id}]]\n${arabic}\n${end}`, [unit], nonce)[0];
+}
 async function translateComplete({ source, prompt, send, chunkSize = 2400, retries = 2, log }) {
     if (!source?.trim() || !prompt.includes(source)) throw new Error('Full source must be included in translation prompt');
     const units = splitSource(source, chunkSize);
@@ -69,4 +116,4 @@ async function translateComplete({ source, prompt, send, chunkSize = 2400, retri
     }
     return result.join('\n\n');
 }
-module.exports = { translateComplete, splitSource, parseCoveredReply, IncompleteTranslationError };
+module.exports = { translateComplete, splitSource, parseCoveredReply, durableUnits, parseDurableReply, IncompleteTranslationError };

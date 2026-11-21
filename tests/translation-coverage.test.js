@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const { splitSource, parseCoveredReply, translateComplete, IncompleteTranslationError } = require('../backend/services/completeTranslation.service');
+const { splitSource, parseCoveredReply, translateComplete, durableUnits, parseDurableReply, IncompleteTranslationError } = require('../backend/services/completeTranslation.service');
 const units = [{ id: '000001', text: 'First source paragraph.' }, { id: '000002', text: 'Last source paragraph.' }];
 const answer = '[[abc_000001]]\nالفقرة الأولى.\n[[abc_000002]]\nالفقرة الأخيرة.\n[[END_abc]]';
 test('Complete paragraph coverage produces clean Arabic text', () => {
@@ -60,6 +60,30 @@ test('Incomplete chapter fails after bounded retries', async () => {
 });
 test('Coverage refuses prompts that omit the full source', async () => {
     await assert.rejects(translateComplete({ source: 'full chapter', prompt: 'short prompt', send: async () => '' }), /Full source/);
+});
+
+test('Durable single-unit framing accepts a missing or equivalent opening tag with a verified ending', () => {
+    const nonce = 'f00abc123def';
+    const unit = { id: '000001', text: '原始章节。\n\n*  *  *\n\n最后一句。' };
+    const arabic = 'هذه هي الفقرة الأولى.\n*  *  *\nوهذه الفقرة الأخيرة.';
+    const end = `[[END_${nonce}]]`;
+    for (const start of ['', `[${nonce}_1]\n`, `[[${nonce}_NNNNNN]]\n`]) {
+        assert.equal(parseDurableReply(`${start}${arabic}\n${end}`, unit, nonce), arabic);
+    }
+    assert.throws(() => parseDurableReply(`${arabic}\n${end}\n${end}`, unit, nonce), IncompleteTranslationError);
+    assert.throws(() => parseDurableReply(`${arabic}\n[[END_wrong]]`, unit, nonce), IncompleteTranslationError);
+    assert.throws(() => parseDurableReply(`[[nonce_for_a_different_unit]]\n${arabic}\n${end}`, unit, nonce), IncompleteTranslationError);
+    assert.throws(() => parseDurableReply(`هذه فقرة قصيرة تلخص كل شيء.\n${end}`, unit, nonce), IncompleteTranslationError);
+    assert.throws(() => parseDurableReply(`${arabic.replace('*  *  *', '…')}\n${end}`, unit, nonce), IncompleteTranslationError);
+});
+
+test('Durable grouping preserves checkpointed units and every remaining source paragraph', () => {
+    const source = Array.from({ length: 45 }, (_, index) => `这是第${index}个段落。`).join('\n\n');
+    const previous = splitSource(source);
+    const grouped = durableUnits(source, 2400, 1);
+    assert.equal(grouped.length, 7);
+    assert.deepEqual(grouped[0], previous[0]);
+    assert.equal(grouped.map(unit => unit.text).join('\n\n'), source);
 });
 
 test('Non-language scene separators are preserved exactly', () => {

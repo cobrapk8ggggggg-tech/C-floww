@@ -8,7 +8,7 @@ const Mirror=require('../../models/chapterContentMirror.model');
 const Conversation=require('../../models/providerConversation.model');
 const AccountState=require('../../models/durableAccountState.model');
 const {configuredProviders}=require('./legacyTranslation');
-const {splitSource,parseCoveredReply}=require('../completeTranslation.service');
+const {durableUnits,parseDurableReply}=require('../completeTranslation.service');
 const problem=(code,blocked=true)=>Object.assign(Error(code),{code,blocked});
 const artifactId=(c,kind)=>`${c.task.id}:${kind}`;
 async function read(id){const a=await S.Artifact.findById(id);if(!a||S.hash(a.text)!==a.hash)throw problem('checkpoint_missing_or_corrupt');return a.text;}
@@ -85,18 +85,19 @@ function createProcessor(deps={}){
   }
   throw problem('provider_routes_exhausted');
  }
+ async function commitContexts(c,call){
+  if(!call.context?.writes?.length)return;
+  await S.transaction(async session=>{
+   await S.assertOwned(c,session);
+   for(const w of call.context.writes)await Conversation.updateOne({key:w.key},{$set:{context:w.value,expiresAt:new Date(Date.now()+30*86400000)}},{upsert:true,session});
+  });
+ }
  async function providerCall(c,operation,prompt,purpose){
-  async function commitContexts(call){
-   await S.transaction(async session=>{
-    await S.assertOwned(c,session);
-    for(const w of call.context?.writes||[])await Conversation.updateOne({key:w.key},{$set:{context:w.value,expiresAt:new Date(Date.now()+30*86400000)}},{upsert:true,session});
-   });
-  }
   const intent=artifactId(c,'generation:'+c.task.generation+':'+operation+':'+S.hash(prompt));
   const saved=await S.Call.findOne({taskId:c.task._id,intent,state:'received'}).sort({attempt:-1,createdAt:-1});
   if(saved){
    if(saved.account)await S.resource(c,'account:'+saved.account);
-   await commitContexts(saved);return saved.reply;
+   await commitContexts(c,saved);return saved.reply;
   }
 
   const r=await route(c.job);
@@ -106,7 +107,7 @@ function createProcessor(deps={}){
   // A stored response is reused even when the worker died before stage commit.
   const calls=await S.Call.find({taskId:c.task._id,operation:base}).sort({attempt:-1});
   const received=calls.find(x=>x.state==='received');
-  if(received){await commitContexts(received);return received.reply;}
+  if(received){await commitContexts(c,received);return received.reply;}
   const latest=calls[0];
   let attempt=latest?latest.attempt+1:0;
   if(latest?.state==='started'&&attempt>1)throw problem('ambiguous_retry_exhausted');
@@ -139,7 +140,7 @@ function createProcessor(deps={}){
    // Save raw replies before parsing or updating job state. No secret/provider object is persisted.
    const context={maps:Object.fromEntries(Object.entries(contexts).map(([k,m])=>[k,[...m]])),writes};
    await S.Call.updateOne({_id:id,state:'started'},{$set:{state:'received',reply,context}},{writeConcern:{w:'majority'}});
-   await commitContexts({context});
+   await commitContexts(c,{context});
    return reply;
   }catch(err){
    if(err.code==='stale_lease')throw err;
@@ -213,33 +214,47 @@ function createProcessor(deps={}){
    const text=typeof original==='string'?original:original?.content;
    if(!text?.trim())throw problem('source_missing');
    if(original?.contentHash&&S.hash(text)!==original.contentHash)throw problem('source_corrupt');
-   const units=splitSource(text,job.config.chunkSize||2400);
+   const units=durableUnits(text,job.config.chunkSize||2400,0);
    if(!units.length)throw problem('source_missing');
    const terms=job.kind==='pure_translate'?JSON.parse(await read(job.id+':glossary')):
     deps.glossary?await deps.glossary(job):await Glossary.find({novelId:job.novelId}).select('term translation -_id').lean();
-   return S.advance(c,{stage:job.kind==='glossary_extract'?'extract':'generate',sourceHash:S.hash(text),units:units.length,glossaryRef:artifactId(c,'glossary')},[
+   return S.advance(c,{stage:job.kind==='glossary_extract'?'extract':'generate',sourceHash:S.hash(text),groupFrom:0,units:units.length,glossaryRef:artifactId(c,'glossary')},[
     {id:artifactId(c,'source'),text,kind:'original'},
     {id:artifactId(c,'glossary'),text:JSON.stringify(terms),kind:'glossary_snapshot'}]);
   }
   const source=await read(artifactId(c,'source'));
-  const units=splitSource(source,job.config.chunkSize||2400);
+  const units=durableUnits(source,job.config.chunkSize||2400,task.groupFrom);
   const glossary=JSON.parse(await read(task.glossaryRef));
   const glossaryText=glossary.map(x=>`${x.term}: ${x.translation}`).join('\n');
   if(task.stage==='generate'){
    const unit=units[task.unit],nonce=S.hash(task.id+':'+task.unit).slice(0,12);
+   const saveCandidate=text=>S.advance(c,{stage:'check_unit',units:units.length},[
+    {id:artifactId(c,'candidate:'+task.unit+':'+task.repair+':'+task.generation),text,kind:'candidate'}]);
+   if(!/\p{L}/u.test(unit.text))return saveCandidate(unit.text);
+   const currentAttempt=`:generation:${task.generation}:translate:${task.unit}:repair:${task.repair}:`;
+   const previousAttempts=task.generation>0&&task.repair===0?`|:generation:${task.generation-1}:translate:${task.unit}:repair:`:'';
+   const replies=await S.Call.find({taskId:task._id,state:'received',
+    operation:{$regex:currentAttempt+previousAttempts}}).select('reply account context').sort({createdAt:-1}).limit(4).lean();
+   for(const saved of replies){
+    let candidate;
+    try{candidate=parseDurableReply(saved.reply,unit,nonce);}catch{continue;}
+    if(saved.account)await S.resource(c,'account:'+saved.account);
+    await commitContexts(c,saved);
+    return saveCandidate(candidate);
+   }
    const marked=`[[${nonce}_${unit.id}]]\n${unit.text}`;
+   const count=unit.text.split(/\n\s*\n/).length;
    const prompt=`${job.config.prompt||'Translate the complete supplied text into Arabic.'}\nGLOSSARY:\n${glossaryText}\n`+
-    `Preserve every paragraph, dialogue and non-language separator. Never summarize or omit content.\n`+
-    `Keep the marker exactly once and output ONLY its full Arabic translation, then [[END_${nonce}]].\n${marked}`+
+    `Translate only the source below. Preserve all ${count} source paragraphs in order, starting each on a separate line. Copy separators unchanged. Preserve all dialogue. Never summarize or omit content.\n`+
+    `Begin directly with the Arabic. The source's opening tag may be omitted. End with [[END_${nonce}]] on its own line.\n${marked}`+
     (task.repair?'\nPrevious reply was incomplete or invalid. Repair this unit fully.':'');
    const reply=await providerCall(c,`translate:${task.unit}:repair:${task.repair}`,prompt,'chapters');
    let translated;
-   try{[translated]=parseCoveredReply(reply,[unit],nonce);}catch{
+   try{translated=parseDurableReply(reply,unit,nonce);}catch{
     if(task.repair>=2)throw problem('translation_quality_failed');
     return S.advance(c,{repair:task.repair+1});
    }
-   return S.advance(c,{stage:'check_unit'},[
-    {id:artifactId(c,'candidate:'+task.unit+':'+task.repair+':'+task.generation),text:translated,kind:'candidate'}]);
+   return saveCandidate(translated);
   }
   if(['check_unit','residue','review'].includes(task.stage)){
    const unit=units[task.unit];

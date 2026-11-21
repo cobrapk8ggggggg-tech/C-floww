@@ -137,7 +137,13 @@ async function transition(id,action,scope={}){
    {$set:{status,nextRunAt:new Date(),blockedCode:''},...(action==='cancel'?{$unset:{novelKey:1,sourceKey:1}}:{})},{new:false,session});
   if(!job)return null;
   if(action==='resume'&&['translation_quality_failed','translation_residues','glossary_quality_failed'].includes(job.blockedCode)){
-   await Task.updateOne({jobId:job._id,state:'pending'},{$inc:{generation:1},$set:{repair:0,stage:job.kind==='glossary_extract'?'extract':job.blockedCode==='glossary_quality_failed'?'extract':'generate'}},{session});
+   const task=await Task.findOne({jobId:job._id,state:'pending'}).sort({ordinal:1}).session(session);
+   if(task){
+    const stage=job.kind==='glossary_extract'||job.blockedCode==='glossary_quality_failed'?'extract':'generate';
+    // Preserve the current unit and all prior checkpoints. Batch the untouched tail on recovery.
+    await Task.updateOne({_id:task._id},{$inc:{generation:1},$set:{repair:0,code:'',stage,
+     ...(task.groupFrom==null&&task.stage==='generate'?{groupFrom:task.unit+1}:{})}},{session});
+   }
   }
   return Job.findById(id).session(session);
  });

@@ -11,6 +11,15 @@ const {staleAfterMs,wasInterrupted,configuredProviders,recoverSavedFirst}=requir
 const {chapterNumbers,sourceUrl,validCoordinatorSecret}=require('./automationRoutes').__test;
 const KINDS=['scrape','smart_translate','pure_translate','glossary_extract'];
 const idOK=v=>typeof v==='string'&&/^[a-f\d]{24}$/i.test(v);
+const stageNames={source:'قراءة النص الأصلي',generate:'ترجمة النص',check_unit:'فحص النص العربي',residue:'استكمال المقاطع الأجنبية',
+ review:'مراجعة جودة الترجمة',quality:'فحص الفصل كاملًا',extract:'استخراج المصطلحات',glossary_commit:'حفظ المصطلحات',
+ publish:'تجهيز الترجمة للنشر',verify:'التحقق من حفظ الفصل',legacy_publish:'إضافة الفصل المحفوظ إلى فهرس النشر',account_prepare:'إعداد حساب المزوّد'};
+const translationErrors={translation_quality_failed:'لم يجتز ردّ المزوّد فحص اكتمال الترجمة.',chapter_quality_failed:'لم يجتز النص فحص جودة الفصل الكامل.',
+ glossary_quality_failed:'صيغة المصطلحات التي أعادها المزوّد غير صالحة.',source_missing:'النص الأصلي للفصل غير متوفر.',
+ provider_rate_limit:'بلغ مزوّد الترجمة حدّ الطلبات.',provider_auth:'رفض مزوّد الترجمة بيانات الدخول.',
+ provider_routes_exhausted:'لا يوجد مزوّد ترجمة متاح بالإعدادات الحالية.',provider_settings_changed:'تغيّرت إعدادات مزوّد المهمة منذ بدئها.',
+ provider_unavailable:'تعذّر الوصول إلى مزوّد الترجمة.',budget_approval_required:'المزوّد الحالي يتطلب موافقة استخدامه.',
+ legacy_publication_changed:'تغيّر نص الفصل المحفوظ أثناء الاستئناف.',publication_readback_failed:'تعذّر التحقق من الفصل بعد الحفظ.'};
 function providerSignature(p){return S.hash({providerId:p.providerId,baseUrl:p.baseUrl||'',selectedModel:p.selectedModel,
  taskConversations:typeof p.toObject==='function'?p.toObject({flattenMaps:true}).taskConversations:p.taskConversations,
  thinkingEnabled:p.thinkingEnabled,searchEnabled:p.searchEnabled,deepSeekModelType:p.deepSeekModelType});}
@@ -96,7 +105,8 @@ module.exports=function mount(app,verifyAdmin,deps={}){
     prompt:settings.customPrompt||'',extractPrompt:settings.translatorExtractPrompt||settings.extractPrompt||'',chunkSize:2400,keyIndex:0,
     existingProvidersAuthorized:fromLegacyControl,novelTitle:novel.title,cover:novel.cover,
     novelMaxChapter:(novel.chapters||[]).reduce((max,chapter)=>Math.max(max,chapter.number||0),Math.max(0,novel.sourceChaptersCount||0,chapters.at(-1)||0)),
-    chapterDelayMs:Math.max(0,Math.min(3600000,Number(body.chapterDelayMs??(kind==='glossary_extract'?3000:2000))||0)),
+    chapterDelayMs:Math.max(0,Math.min(3600000,Number(body.chapterDelayMs??
+     (body.chapterDelay==null?(kind==='glossary_extract'?3000:2000):Number(body.chapterDelay)*1000))||0)),
     ...(transfer?{priorCompleted:transfer.priorCompleted,priorLastChapter:transfer.priorLastChapter}:{} )};
    if((process.env.AUTOMATION_LONG_PROVIDER_IDS||'').split(',').includes(provider.providerId))payload.workerClass='long';
    if(!config.model)throw Object.assign(Error('provider_model_missing'),{status:400});
@@ -258,14 +268,24 @@ module.exports=function mount(app,verifyAdmin,deps={}){
  for(const [prefix,kind] of [['/api/translator','smart_translate'],['/api/pure-translate','pure_translate'],['/api/glossary-ai','glossary_extract']]){
   const legacyModel=require('../models/'+({'smart_translate':'translationJob','pure_translate':'pureTranslationJob','glossary_extract':'glossaryExtractionJob'}[kind])+'.model');
   const legacyView=async(j,details=false)=>{
-   const pending=await S.Task.find({jobId:j._id,state:{$ne:'verified'}}).select('number stage').sort({ordinal:1});
+   const pending=await S.Task.find({jobId:j._id,state:{$ne:'verified'}}).select('number stage unit units extractionUnit').sort({ordinal:1});
    const previous=j.config?.priorCompleted||0,done=previous+j.successCount,total=previous+j.chapters.length;
-   const logs=details?(await S.Event.find({jobId:j._id}).sort({_id:-1}).limit(100)).reverse().map(e=>({
+   const publishedStages=kind==='glossary_extract'?['glossary_commit']:['verify','legacy_publish'];
+   const logs=details?(await S.Event.find({jobId:j._id,$or:[{code:{$ne:'stage_committed'}},{stage:{$in:publishedStages}}]})
+    .sort({_id:-1}).limit(80)).reverse().filter(e=>j.status!=='blocked'||e.code!==j.blockedCode).map(e=>({
     timestamp:e.createdAt,type:e.code==='completed'?'success':e.type,
-    message:e.code==='completed'?'اكتملت المهمة وحُفظت الفصول':e.code==='stage_committed'?`الفصل ${e.chapter}: حُفظ تقدم مرحلة ${e.stage}`:`الفصل ${e.chapter||'—'}: ${e.code}`
+    message:e.code==='completed'?'اكتملت المهمة وحُفظت النتائج.':e.code==='stage_committed'?
+     `الفصل ${e.chapter} ${kind==='glossary_extract'?'حُفظت مصطلحاته.':'حُفظ ونُشر.'}`:
+     `الفصل ${e.chapter||'—'} · ${translationErrors[e.code]||e.code}`
    })):[];
-   if(details&&j.status==='blocked')logs.push({timestamp:j.updatedAt,type:'error',message:`توقفت المهمة: ${j.blockedCode||j.lastError}. يمكنك الاستئناف بعد معالجة السبب.`});
-   else if(details&&pending.length)logs.push({timestamp:j.updatedAt,type:'info',message:`الفصل التالي: ${pending[0].number}.`});
+   const current=pending[0];
+   if(details&&j.status==='blocked')logs.push({timestamp:j.updatedAt,type:'error',
+    message:`توقفت المهمة عند الفصل ${current?.number||'—'}. ${translationErrors[j.blockedCode]||j.blockedCode||j.lastError}`});
+   else if(details&&current&&['queued','running','retry_wait'].includes(j.status)){
+    const unit=current.stage==='extract'?current.extractionUnit:current.unit;
+    logs.push({timestamp:j.updatedAt,type:'info',message:`الفصل ${current.number} · ${j.status==='retry_wait'?'بانتظار إعادة المحاولة':stageNames[current.stage]||'قيد المعالجة'}`+
+     (j.status!=='retry_wait'&&current.units>1&&unit<current.units?` (${unit+1}/${current.units})`:'')});
+   }
    return {...view(j),_id:j.id,status:['queued','running','retry_wait'].includes(j.status)?'active':j.status==='blocked'?'paused':j.status,
     novelTitle:j.config?.novelTitle||j.label,cover:j.config?.cover,chapterDelayMs:j.config?.chapterDelayMs,
     startTime:j.createdAt,lastUpdate:j.updatedAt,currentChapter:(j.successCount?j.chapters[j.successCount-1]:j.config?.priorLastChapter)||0,
@@ -379,7 +399,7 @@ module.exports=function mount(app,verifyAdmin,deps={}){
    const user=await identity(req);
    const where={_id:req.params.id,engineVersion:2,kind,...scope(user)};
    if(!await S.Job.exists(where))return legacyControl(req,res,next,user);
-   const delay=Number(req.body?.chapterDelayMs);
+   const delay=req.body?.chapterDelayMs==null?Number(req.body?.seconds)*1000:Number(req.body.chapterDelayMs);
    if(!Number.isFinite(delay)||delay<0||delay>3600000)return res.sendStatus(400);
    await S.Job.updateOne(where,{$set:{'config.chapterDelayMs':Math.round(delay)}});
    return res.json({message:'Delay updated',chapterDelayMs:Math.round(delay)});
