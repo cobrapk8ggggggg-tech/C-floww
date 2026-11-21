@@ -64,9 +64,9 @@ app.get('/api/automation/health', async (_req, res) => {
 });
 
 // Await bounded connection attempts inside requests; no background retry loop.
-const storage = require('./config/automationIsolation');
-const useExistingDatabases = storage.usesExistingDatabases();
-const configuredDb = storage.mongoDatabase();
+const databasePolicy = require('./config/automationIsolation');
+const useExistingDatabases = databasePolicy.usesExistingDatabases();
+const configuredDb = databasePolicy.mongoDatabase();
 const connectToDatabase = require('./services/databaseConnection.service')(mongoose, {
     uri: process.env.MONGODB_URI, dbName: configuredDb
 });

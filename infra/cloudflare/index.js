@@ -8,16 +8,19 @@ const STEPS={
   smart:'/api/automation/worker/smart-translate-tick'
 };
 const isEnabled=env=>env.AUTOMATION_ENABLED==='true';
+const coordinatorSecret=env=>env.AUTOMATION_TARGET==='production'?env.AUTOMATION_LIVE_SECRET:env.AUTOMATION_SECRET;
+const allowedKind=(env,kind)=>Object.hasOwn(STEPS,kind)&&(env.AUTOMATION_TARGET!=='production'||kind==='v2');
 
 async function runStep(env,kind) {
-  if(kind!=='ready'&&!STEPS[kind])throw new Error('Unsupported queue message');
-  if(!env.AUTOMATION_SECRET || !env.BACKEND_URL)throw new Error('Coordinator not configured');
+  if(kind!=='ready'&&!allowedKind(env,kind))throw new Error('Unsupported queue message');
+  if(!coordinatorSecret(env) || !env.BACKEND_URL)throw new Error('Coordinator not configured');
   const base=new URL(env.BACKEND_URL);
   if(base.protocol!=='https:')throw new Error('HTTPS is required');
   const url=new URL(kind==='ready'?'/api/automation/worker/ready':STEPS[kind],base);
   const response=await fetch(url,{
     method:'POST',
-    headers:{'x-automation-secret':env.AUTOMATION_SECRET},
+    headers:{'x-automation-secret':coordinatorSecret(env)},
+    redirect:'error',
     signal:AbortSignal.timeout(270000)
   });
   if(!response.ok)throw new Error('Backend step '+kind+' failed: HTTP '+response.status);
@@ -26,7 +29,7 @@ async function runStep(env,kind) {
 
 async function permit(env,cost){
  const url=new URL('/api/automation/worker/queue-permit',env.BACKEND_URL);
- const r=await fetch(url,{method:'POST',headers:{'content-type':'application/json','x-automation-secret':env.AUTOMATION_SECRET},
+ const r=await fetch(url,{method:'POST',redirect:'error',headers:{'content-type':'application/json','x-automation-secret':coordinatorSecret(env)},
   body:JSON.stringify({cost}),signal:AbortSignal.timeout(12000)});
  if(!r.ok)return false;
  return (await r.json()).allowed===true;
@@ -38,16 +41,17 @@ async function send(env,kind,options){
 
 async function authorized(request,env){
  const supplied=request.headers.get('x-automation-secret')||'';
- if(!env.AUTOMATION_SECRET||!supplied||supplied.length>512)return false;
+ const secret=coordinatorSecret(env);
+ if(!secret||!supplied||supplied.length>512)return false;
  const algorithm={name:'HMAC',hash:'SHA-256'},enc=new TextEncoder(),data=enc.encode('ZEUS coordinator wake');
- const expected=await crypto.subtle.importKey('raw',enc.encode(env.AUTOMATION_SECRET),algorithm,false,['sign']);
+ const expected=await crypto.subtle.importKey('raw',enc.encode(secret),algorithm,false,['sign']);
  const actual=await crypto.subtle.importKey('raw',enc.encode(supplied),algorithm,false,['verify']);
  const signature=await crypto.subtle.sign('HMAC',expected,data);
  return crypto.subtle.verify('HMAC',actual,signature,data);
 }
 async function wake(env){
  const ready=await runStep(env,'ready');
- const kinds=[...new Set(ready.kinds||[])].filter(k=>STEPS[k]).slice(0,2);
+ const kinds=[...new Set(ready.kinds||[])].filter(k=>allowedKind(env,k)).slice(0,2);
  for(const kind of kinds)await send(env,kind);
 }
 
@@ -71,8 +75,10 @@ export default {
           fetch((env.SCRAPER_URL || DEFAULT_SCRAPER)+'/health',{signal:AbortSignal.timeout(12000)})
         ]);
         const state=await backend.json().catch(()=>({}));
+        const databaseReady=env.AUTOMATION_TARGET==='production'?
+          state.usesExistingDatabases===true&&state.durableEngine===true:state.databaseIsolated===true;
         const ready=backend.ok&&scraper.ok&&state.databaseConfigured===true && state.databaseConnected===true &&
-          state.databaseIsolated===true && state.firestoreConfigured===true && state.automationConfigured===true;
+          databaseReady && state.firestoreConfigured===true && state.automationConfigured===true;
         return Response.json({
           service:'zeus-automation-coordinator',backend:backend.status,scraper:scraper.status,
           databaseConfigured:state.databaseConfigured===true,ready
@@ -98,7 +104,7 @@ export default {
         continue;
       }
       const kind=message.body?.kind;
-      if(!STEPS[kind]){message.ack();continue;}
+      if(!allowedKind(env,kind)){message.ack();continue;}
       try{
         const result=await runStep(env,kind);
         // Continue promptly when work was completed. Idle or backoff states
