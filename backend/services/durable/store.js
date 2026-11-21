@@ -29,7 +29,9 @@ async function createJob(input){
  try{return await transaction(async session=>{
   const [job]=await Job.create([{...input.payload,engineVersion:2,ownerId:input.ownerId,requestKey,requestHash,
    novelKey:input.novelKey,...(input.payload.kind==='scrape'?{sourceKey:hash(input.payload.sourceUrl)}:{}),config:input.config,status:'queued'}],{session});
-  await Task.insertMany(job.chapters.map((number,ordinal)=>({jobId:job._id,number,ordinal})),{session});
+  const tasks=job.config?.catalogPlan?[{jobId:job._id,number:0,ordinal:-1,stage:'catalog'}]:
+   job.chapters.map((number,ordinal)=>({jobId:job._id,number,ordinal}));
+  await Task.insertMany(tasks,{session});
   if(input.glossary!==undefined)await immutable(job.id+':glossary',JSON.stringify(input.glossary),{jobId:job._id,kind:'glossary_snapshot'},session);
   return {job,created:true};
  });}catch(e){if(e.code===11000){if(requestKey){const j=await Job.findOne({requestKey});if(j&&j.requestHash===requestHash)return {job:j,created:false};}throw Object.assign(Error('novel_busy_or_idempotency_conflict'),{status:409});}throw e;}
@@ -64,6 +66,22 @@ async function heartbeat(c){return transaction(async session=>{
  if(r.modifiedCount!==1)throw new StaleLease();
  await Lock.updateMany({token:c.token,until:{$gt:new Date()}},{$set:{until}},{session});
 });}
+async function finishScrapePlan(c,chapters){
+ return transaction(async session=>{
+  await assertOwned(c,session);
+  if(c.task?.stage!=='catalog')throw new StaleLease();
+  await Task.deleteOne({_id:c.task._id,jobId:c.job._id},{session});
+  if(chapters.length)await Task.insertMany(chapters.map((number,ordinal)=>({jobId:c.job._id,number,ordinal})),{session});
+  const completed=chapters.length===0;
+  const updated=await Job.updateOne(owned(c),{
+   $set:{chapters,status:completed?'completed':'queued',attempts:0,lastError:'',blockedCode:'',leaseToken:'',leaseUntil:new Date(0),nextRunAt:new Date(),...(completed?{finishedAt:new Date()}:{})},
+   $unset:{'config.catalogPlan':1,...(completed?{sourceKey:1,novelKey:1}:{})}
+  },{session});
+  if(updated.modifiedCount!==1)throw new StaleLease();
+  await Event.create([{jobId:c.job._id,stage:'catalog',code:completed?'no_missing_chapters':'catalog_ready'}],{session});
+  return {completed};
+ });
+}
 async function resource(c,key){return transaction(async session=>{
  await assertOwned(c,session);
  try{await Lock.findOneAndUpdate({_id:key,$or:[{until:{$lte:new Date()}},{token:c.token}]},
@@ -116,4 +134,4 @@ async function transition(id,action,scope={}){
  });
 }
 
-module.exports={Job,Task,Artifact,Call,Lock,Event,hash,transaction,immutable,createJob,claim,owned,assertOwned,heartbeat,resource,advance,settle,release,transition,StaleLease};
+module.exports={Job,Task,Artifact,Call,Lock,Event,hash,transaction,immutable,createJob,claim,owned,assertOwned,heartbeat,finishScrapePlan,resource,advance,settle,release,transition,StaleLease};

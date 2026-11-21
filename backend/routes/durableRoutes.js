@@ -5,6 +5,8 @@ const Novel=require('../models/novel.model');
 const User=require('../models/user.model');
 const Glossary=require('../models/glossary.model');
 const legacyState=require('../services/durable/legacyState');
+const watchSchedule=require('../services/durable/watchSchedule');
+const {parseScrapeSelection}=require('../services/durable/scrapeSelection');
 const {chapterNumbers,sourceUrl,validCoordinatorSecret}=require('./automationRoutes').__test;
 const KINDS=['scrape','smart_translate','pure_translate','glossary_extract'];
 const idOK=v=>typeof v==='string'&&/^[a-f\d]{24}$/i.test(v);
@@ -39,15 +41,17 @@ module.exports=function mount(app,verifyAdmin,deps={}){
    res.status(error.status||503).json({error:error.status?error.message:'Durable operation unavailable'});
   }
  };
- async function create(body,user,key){
+ async function create(body,user,key,{wake=true,watchSweep=false}={}){
   const kind=body.kind||'scrape';if(!KINDS.includes(kind))throw Object.assign(Error('Invalid kind'),{status:400});
-  const chapters=chapterNumbers(body);
+  const selection=kind==='scrape'&&body.chapterSpec!==undefined?parseScrapeSelection(body.chapterSpec,watchSweep):null;
+  const chapters=selection?.chapters||chapterNumbers(body);
   const sourceSelection=body.sourceSelection||'verified_original';
   if(!['verified_original','current_content'].includes(sourceSelection))throw Object.assign(Error('Invalid source selection'),{status:400});
   const payload={kind,chapters,sourceSelection,adminEmail:user.email||'system@auto'};
   if(key&&(!/^[\x21-\x7e]{1,128}$/.test(key)))throw Object.assign(Error('Invalid Idempotency-Key'),{status:400});
   const requestedSource=kind==='scrape'?sourceUrl(body.sourceUrl):undefined;
-  const fingerprint=S.hash({kind,chapters,sourceSelection,...(kind==='scrape'?{sourceUrl:requestedSource}:{novelId:body.novelId})});
+  const fingerprint=S.hash({kind,chapters,sourceSelection,...(selection?.catalogPlan?{plan:selection.catalogPlan}:{}),
+   ...(kind==='scrape'?{sourceUrl:requestedSource}:{novelId:body.novelId})});
   if(key){const old=await S.Job.findOne({requestKey:S.hash(user.id+':'+key)});if(old){
    if(old.requestHash!==fingerprint)throw Object.assign(Error('idempotency_conflict'),{status:409});
    return {job:old,created:false};
@@ -66,6 +70,11 @@ module.exports=function mount(app,verifyAdmin,deps={}){
   if(novel)payload.novelId=novel._id;
   if(kind!=='scrape'&&novel?.sourceUrl&&await S.Job.exists({kind:'scrape',sourceUrl:novel.sourceUrl,status:{$nin:['completed','cancelled','failed']}}))throw Object.assign(Error('source_job_active'),{status:409});
   let config={},glossary;
+  if(kind==='scrape'){
+   if(selection?.catalogPlan)config.catalogPlan=selection.catalogPlan;
+   if(body.watchRequested===true)config.watchRequested=true;
+   if(watchSweep)config.watchSweep=true;
+  }
   if(kind!=='scrape'){
    for(const name of ['translationJob','pureTranslationJob','glossaryExtractionJob']){
     if(await require('../models/'+name+'.model').exists({novelId:novel._id,status:'active'}))
@@ -83,14 +92,41 @@ module.exports=function mount(app,verifyAdmin,deps={}){
   }
   const result=await S.createJob({payload,config,glossary,ownerId:user.id,idempotencyKey:key,requestFingerprint:fingerprint,
    novelKey:novel?'novel:'+novel.id:'source:'+S.hash(payload.sourceUrl)});
+  if(result.created&&config.watchRequested&&novel)await Novel.updateOne({_id:novel._id},{$set:{isWatched:true}});
+  if(wake)await wakeCoordinator();
+  return result;
+ }
+ async function wakeCoordinator(){
   const coordinator=process.env.AUTOMATION_COORDINATOR_URL;
   if(coordinator&&process.env.AUTOMATION_SECRET){
    try{const url=new URL('/wake',coordinator);if(url.protocol!=='https:')throw Error('HTTPS required');
     await fetch(url,{method:'POST',headers:{'x-automation-secret':process.env.AUTOMATION_SECRET},signal:AbortSignal.timeout(3000)});
    }catch{/* The MongoDB job remains discoverable by cron. */}
   }
-  return result;
  }
+ const queueWatched=(novel,user,key,wake=false)=>create({kind:'scrape',sourceUrl:novel.sourceUrl,chapterSpec:''},user,key,{wake,watchSweep:true});
+ app.get('/api/automation/watch-schedule',verifyAdmin,wrap(async(req,res)=>{
+  if(!(await identity(req)).admin)return res.sendStatus(403);
+  res.json(watchSchedule.view(await watchSchedule.settings()));
+ }));
+ app.post('/api/automation/watch-schedule',verifyAdmin,wrap(async(req,res)=>{
+  const user=await identity(req);if(!user.admin)return res.sendStatus(403);
+  res.json(watchSchedule.view(await watchSchedule.configure(req.body||{},user.id)));
+ }));
+ app.post('/api/automation/watch-refresh',verifyAdmin,wrap(async(req,res)=>{
+  const user=await identity(req);if(!user.admin)return res.sendStatus(403);
+  if(!enabled())return res.sendStatus(503);
+  if(req.body?.novelId===undefined){
+   await watchSchedule.requestSweep(user.id);
+   await wakeCoordinator();
+   return res.status(202).json({queued:true});
+  }
+  if(!idOK(req.body.novelId))return res.sendStatus(400);
+  const novel=await Novel.findOne({_id:req.body.novelId,isWatched:true});
+  if(!novel?.sourceUrl)return res.sendStatus(404);
+  const result=await queueWatched(novel,user,req.get('idempotency-key'),true);
+  res.status(result.created?201:200).json(view(result.job));
+ }));
  app.get('/api/automation/migration-report',verifyAdmin,wrap(async(req,res)=>{
   if(!(await identity(req)).admin)return res.sendStatus(403);
   res.json(await legacyState.report());
@@ -150,7 +186,7 @@ module.exports=function mount(app,verifyAdmin,deps={}){
   if(!enabled())return res.json({ok:true,disabled:true});
   const policy=await legacyState.executionPolicy(['scrape']);
   if(!policy.kinds.length)return res.json({ok:true,disabled:true,code:'legacy_jobs_require_reconciliation'});
-  const c=await S.claim(policy.kinds,{longWorker:true,scope:policy.scope});if(!c)return res.json({ok:true,idle:true});
+  const c=await S.claim(policy.kinds,{longWorker:true,scope:{...policy.scope,'config.catalogPlan':{$exists:false}}});if(!c)return res.json({ok:true,idle:true});
   try{await S.resource(c,'source:'+new URL(c.job.sourceUrl).hostname);}
   catch{await S.settle(c,'source_busy');await S.release(c);return res.json({ok:true,idle:true});}
   res.json({ok:true,jobId:c.job.id,taskId:c.task.id,token:c.token,fence:c.fence,sourceUrl:c.job.sourceUrl,chapterNumber:c.task.number});
@@ -193,6 +229,7 @@ module.exports=function mount(app,verifyAdmin,deps={}){
   }
   const kinds=[];
   if(enabled()){
+   try{await watchSchedule.tick(queueWatched);}catch{console.error('Watch schedule tick could not advance');}
    const policy=await legacyState.executionPolicy(KINDS);
    if(policy.kinds.length&&await S.Job.exists({engineVersion:2,...policy.scope,kind:{$in:policy.kinds},workerClass:{$ne:'long'},
     status:{$in:['queued','running','retry_wait']},leaseUntil:{$lte:new Date()},nextRunAt:{$lte:new Date()}}))kinds.push('v2');

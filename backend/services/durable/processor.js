@@ -154,15 +154,21 @@ function createProcessor(deps={}){
   if(!task)throw problem('missing_task_manifest');
   if(job.kind==='scrape'){
    await S.resource(c,'source:'+new URL(job.sourceUrl).hostname);
-   const result=deps.scrape?await deps.scrape(job,task):await (async()=>{
+   const catalogOnly=task.stage==='catalog';
+   const result=!catalogOnly&&deps.scrape?await deps.scrape(job,task):await (async()=>{
     const base=process.env.SCRAPER_SERVICE_URL?.replace(/\/+$/,'');
     const legacySecret=process.env.SCRAPER_API_SECRET, ingest=process.env.AUTOMATION_INGEST_SECRET;
     if(!base||!ingest||(!legacySecret&&!require('../../config/automationIsolation').usesExistingDatabases()))throw problem('scraper_not_configured');
     const res=await fetch(base+'/automation/scrape-chapter',{method:'POST',redirect:'error',headers:{'content-type':'application/json',...(legacySecret?{authorization:legacySecret}:{}),'x-automation-ingest-secret':ingest},
-     body:JSON.stringify({sourceUrl:job.sourceUrl,chapterNumber:task.number,jobId:job.id}),signal:AbortSignal.timeout(80000)});
+     body:JSON.stringify({sourceUrl:job.sourceUrl,jobId:job.id,...(catalogOnly?{catalogOnly:true}:{chapterNumber:task.number})}),signal:AbortSignal.timeout(80000)});
     if(!res.ok)throw Object.assign(Error('scraper_unavailable'),{code:'scraper_unavailable',requiresLongWorker:res.status===504,blocked:[400,401,403,422].includes(res.status)});
     return res.json();
    })();
+   if(catalogOnly){
+    if(!result.ok||result.catalogReady!==true)throw problem('invalid_catalog_response',false);
+    const chapters=await require('./scrapeSelection').chaptersFromCatalog(job,firestore());
+    return S.finishScrapePlan(c,chapters);
+   }
    if(!result.ok||result.chapterNumber!==task.number||!result.receiptId)throw problem('invalid_scraper_receipt',false);
    if(!deps.trustTestScrape){
     const receipt=await Import.findById(result.receiptId);

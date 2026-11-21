@@ -1,0 +1,55 @@
+'use strict';
+const test=require('node:test');
+const assert=require('node:assert/strict');
+const mongoose=require('../backend/node_modules/mongoose');
+const S=require('../backend/services/durable/store');
+const {parseScrapeSelection,chaptersFromCatalog}=require('../backend/services/durable/scrapeSelection');
+const watch=require('../backend/services/durable/watchSchedule');
+const Novel=require('../backend/models/novel.model');
+const User=require('../backend/models/user.model');
+const {Catalog,CatalogChapter,catalogId}=require('../backend/models/automationCatalog.model');
+const uri=process.env.AUTOMATION_TEST_REPLICA_URI;
+test('full and open ranges become a durable manifest and completed chapters are skipped',{skip:!uri},async()=>{
+ await mongoose.connect(uri,{dbName:'zeus_automation_watch_'+Date.now()});
+ try{
+  const sourceUrl='https://novelfire.net/unit-test-watch';
+  const owner=await User.create({name:'Admin',email:'watch@example.invalid',googleId:'test-watch',role:'admin'});
+  const novel=await Novel.create({title:'Watched',author:'Test',sourceUrl,isWatched:true,chapters:[{number:3,title:'Published'}]});
+  assert.deepEqual(parseScrapeSelection('5-4،2').chapters,[2,4,5]);
+  assert.ok(parseScrapeSelection('').catalogPlan);
+  const {catalogPlan}=parseScrapeSelection('2,3-!');
+  assert.deepEqual(catalogPlan.ranges,[[2,2],[3,null]]);
+  const {job}=await S.createJob({payload:{kind:'scrape',novelId:novel._id,sourceUrl,chapters:[]},config:{catalogPlan},ownerId:owner.id});
+  assert.equal((await S.Task.findOne({jobId:job._id})).stage,'catalog');
+  const id=catalogId(sourceUrl,job.id);
+  await Catalog.create({_id:id,sourceUrl,jobId:job.id,total:5,ready:true});
+  await CatalogChapter.insertMany([1,2,3,4,5].map(number=>({catalogId:id,number})));
+  const firestore={collection:()=>({doc:()=>({collection:()=>({listDocuments:async()=>[{id:'4'}]})})})};
+  const selection=await chaptersFromCatalog(job,firestore);
+  assert.deepEqual(selection,[2,5]);
+  const claim=await S.claim(['scrape']);
+  await S.finishScrapePlan(claim,selection);
+  await S.release(claim);
+  const prepared=await S.Job.findById(job.id);
+  assert.deepEqual(prepared.chapters,[2,5]);
+  assert.equal(prepared.config?.catalogPlan,undefined);
+  assert.deepEqual((await S.Task.find({jobId:job._id}).sort({ordinal:1})).map(row=>row.number),[2,5]);
+
+  const now=new Date();
+  await watch.configure({enabled:true,intervalMinutes:10},owner.id,now);
+  const enqueued=[];
+  const enqueue=(n,actor,key)=>{enqueued.push([String(n._id),actor.id,key]);};
+  await watch.tick(enqueue,now);
+  assert.equal(enqueued.length,0);
+  const due=new Date(+now+600000);
+  await Promise.all([watch.tick(enqueue,due),watch.tick(enqueue,due)]);
+  assert.equal(enqueued.length,1);
+  assert.deepEqual(enqueued[0].slice(0,2),[novel.id,owner.id]);
+  assert.equal(+((await watch.settings()).nextRunAt),+due+600000);
+  await watch.configure({enabled:false,intervalMinutes:10},owner.id,due);
+  await watch.requestSweep(owner.id);
+  await watch.tick(enqueue,due);
+  assert.equal(enqueued.length,2);
+  assert.equal(watch.view(await watch.settings()).inProgress,false);
+ }finally{await mongoose.connection.dropDatabase();await mongoose.disconnect();}
+});
