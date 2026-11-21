@@ -26,7 +26,19 @@ module.exports=function mount(app,verifyAdmin,deps={}){
   return {id:String(user._id),admin:user.role==='admin',email:user.email};
  };
  const scope=user=>user.admin?{}:{ownerId:user.id};
- const wrap=fn=>async(req,res,next)=>{try{await fn(req,res,next);}catch(e){res.status(e.status||503).json({error:e.status?e.message:'Durable operation unavailable'});}};
+ const wrap=fn=>async(req,res,next)=>{
+  try{await fn(req,res,next);}
+  catch(error){
+   if(!error.status){
+    const safeLabel=value=>typeof value==='string'&&/^[a-zA-Z][a-zA-Z0-9_]{0,80}$/.test(value)?value:undefined;
+    console.error('Durable operation failed',{
+     route:req.route?.path,name:safeLabel(error.name),code:typeof error.code==='number'?error.code:safeLabel(error.code),
+     codeName:safeLabel(error.codeName)
+    });
+   }
+   res.status(error.status||503).json({error:error.status?error.message:'Durable operation unavailable'});
+  }
+ };
  async function create(body,user,key){
   const kind=body.kind||'scrape';if(!KINDS.includes(kind))throw Object.assign(Error('Invalid kind'),{status:400});
   const chapters=chapterNumbers(body);
