@@ -89,6 +89,7 @@ module.exports=function mount(app,verifyAdmin,deps={}){
     providerSignature:providerSignature(provider),routes:ordered.map(p=>({providerId:p.providerId,model:p.selectedModel||p.models?.[0]?.modelId,providerSignature:providerSignature(p)})),routeIndex:0,
     prompt:settings.customPrompt||'',extractPrompt:settings.translatorExtractPrompt||settings.extractPrompt||'',chunkSize:2400,keyIndex:0,
     existingProvidersAuthorized:fromLegacyControl,novelTitle:novel.title,cover:novel.cover,
+    novelMaxChapter:(novel.chapters||[]).reduce((max,chapter)=>Math.max(max,chapter.number||0),Math.max(0,novel.sourceChaptersCount||0,chapters.at(-1)||0)),
     chapterDelayMs:Math.max(0,Math.min(3600000,Number(body.chapterDelayMs??(kind==='glossary_extract'?3000:2000))||0)),
     ...(transfer?{priorCompleted:transfer.priorCompleted,priorLastChapter:transfer.priorLastChapter}:{} )};
    if((process.env.AUTOMATION_LONG_PROVIDER_IDS||'').split(',').includes(provider.providerId))payload.workerClass='long';
@@ -257,9 +258,11 @@ module.exports=function mount(app,verifyAdmin,deps={}){
     message:e.code==='completed'?'اكتملت المهمة وحُفظت الفصول':e.code==='stage_committed'?`الفصل ${e.chapter}: حُفظ تقدم مرحلة ${e.stage}`:`الفصل ${e.chapter||'—'}: ${e.code}`
    })):[];
    if(details&&j.status==='blocked')logs.push({timestamp:j.updatedAt,type:'error',message:`توقفت المهمة: ${j.blockedCode||j.lastError}. يمكنك الاستئناف بعد معالجة السبب.`});
+   else if(details&&pending.length)logs.push({timestamp:j.updatedAt,type:'info',message:`الفصل التالي: ${pending[0].number}.`});
    return {...view(j),_id:j.id,status:['queued','running','retry_wait'].includes(j.status)?'active':j.status==='blocked'?'paused':j.status,
     novelTitle:j.config?.novelTitle||j.label,cover:j.config?.cover,chapterDelayMs:j.config?.chapterDelayMs,
-    startTime:j.createdAt,lastUpdate:j.updatedAt,currentChapter:pending[0]?.number||j.chapters.at(-1)||j.config?.priorLastChapter,
+    startTime:j.createdAt,lastUpdate:j.updatedAt,currentChapter:(j.successCount?j.chapters[j.successCount-1]:j.config?.priorLastChapter)||0,
+    novelMaxChapter:j.config?.novelMaxChapter||j.chapters.at(-1)||0,
     totalToTranslate:total,totalToExtract:total,translatedCount:done,processedCount:done,
     targetChapters:pending.map(t=>t.number),logs};
   };

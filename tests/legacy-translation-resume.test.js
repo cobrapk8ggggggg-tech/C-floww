@@ -67,7 +67,9 @@ test('the real legacy resume route retains its ID and skips a translated chapter
   const resumedView=await (await get('/api/translator/jobs/'+old.id)).json();
   assert.equal(resumedView.totalToTranslate,3);
   assert.equal(resumedView.translatedCount,1);
-  assert.equal(resumedView.currentChapter,3);
+  assert.equal(resumedView.currentChapter,2);
+  assert.equal(resumedView.targetChapters[0],3);
+  assert.equal(resumedView.novelMaxChapter,4);
   assert.equal(resumedView.engineVersion,2);
   const rows=await (await get('/api/translator/jobs')).json();
   assert.equal(rows.filter(row=>row.id===old.id).length,1);
