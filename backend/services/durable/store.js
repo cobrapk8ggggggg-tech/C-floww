@@ -10,6 +10,8 @@ const Event=require('../../models/durableEvent.model');
 const LEASE_MS=120000;
 class StaleLease extends Error{constructor(){super('stale_lease');this.code='stale_lease';}}
 const hash=v=>crypto.createHash('sha256').update(typeof v==='string'?v:JSON.stringify(v)).digest('hex');
+const resumeWholeExtraction=(job,task)=>job.blockedCode==='glossary_quality_failed'&&
+ task.stage==='extract'&&task.extractionUnit===0&&!task.wholeChapter&&task.units>1;
 async function transaction(fn){const session=await mongoose.startSession();try{return await session.withTransaction(()=>fn(session),{readConcern:{level:'snapshot'},writeConcern:{w:'majority'},readPreference:'primary',timeoutMS:20000,maxCommitTimeMS:10000});}finally{await session.endSession();}}
 function owned(c){return {_id:c.job._id,engineVersion:2,status:'running',leaseToken:c.token,fence:c.fence,leaseUntil:{$gt:new Date()}};}
 async function assertOwned(c,session){if(!await Job.exists(owned(c)).session(session||null))throw new StaleLease();}
@@ -140,13 +142,13 @@ async function transition(id,action,scope={}){
    const task=await Task.findOne({jobId:job._id,state:'pending'}).sort({ordinal:1}).session(session);
    if(task){
     const stage=job.kind==='glossary_extract'||job.blockedCode==='glossary_quality_failed'?'extract':'generate';
-    // Preserve the current unit and all prior checkpoints. Batch the untouched tail on recovery.
+    // Reuse the finalized translation when no terminology checkpoint has been accepted.
     await Task.updateOne({_id:task._id},{$inc:{generation:1},$set:{repair:0,code:'',stage,
-     ...(task.groupFrom==null&&task.stage==='generate'?{groupFrom:task.unit+1}:{})}},{session});
+     ...(resumeWholeExtraction(job,task)?{wholeChapter:true,units:1,unit:job.kind==='smart_translate'?1:0}:{})}},{session});
    }
   }
   return Job.findById(id).session(session);
  });
 }
 
-module.exports={Job,Task,Artifact,Call,Lock,Event,hash,transaction,immutable,createJob,claim,owned,assertOwned,heartbeat,finishScrapePlan,resource,advance,settle,release,transition,StaleLease};
+module.exports={Job,Task,Artifact,Call,Lock,Event,hash,transaction,immutable,createJob,claim,owned,assertOwned,heartbeat,finishScrapePlan,resource,advance,settle,release,transition,resumeWholeExtraction,StaleLease};

@@ -122,23 +122,25 @@ test('durable engine with real replica-set transactions', {skip:!uri},async t=>{
    const withoutCredentials=processor(db,{route:async()=>{throw Error('credential no longer available');},provider:async()=>{throw Error('must not generate again');}});
    assert.equal((await run(withoutCredentials,j)).status,'completed');assert.equal(calls,1);
   });
-  await t.test('a blocked smart job reuses its saved Arabic reply and runs grouped translation through the next chapter',async()=>{
+  await t.test('a smart job keeps existing segment checkpoints and sends the next chapter whole',async()=>{
    const n=await novel(),j=await make('smart_translate',n,[3,4]),db=fakeFirestore();
-   const paragraphs=Array.from({length:12},(_,index)=>`An event happened ${index} in the ancient city.`);
+   const paragraphs=Array.from({length:12},(_,index)=>'The traveler entered the ancient city and greeted his companions. '.repeat(4)+`Event ${index}.`);
    const raw=paragraphs.join('\n\n');
-   const translatedParagraph='عاد المسافر إلى المدينة القديمة والتقى الرفاق الذين انتظروه طوال الليل.';
+   assert.ok(raw.length>2400);
+   const translatedParagraph='عاد المسافر إلى المدينة القديمة والتقى الرفاق الذين انتظروه طوال الليل. وبعد أن اجتمعوا أخبرهم بما حدث في الطريق.'.trim();
    let generations=0,extractions=0;
    const p=processor(db,{source:async()=>raw,provider:async(prompt,{operation})=>{
     if(operation.startsWith('extract:')){extractions++;return '[]';}
     generations++;
     const end=prompt.match(/\[\[END_([a-f0-9]{12})\]\]/)[0];
     const count=paragraphs.filter(paragraph=>prompt.includes(paragraph)).length;
+    if(generations===3)assert.ok(prompt.includes(raw));
     return Array(count).fill(translatedParagraph).join('\n')+'\n'+end;
    }});
    await p.tick();
    const task=await S.Task.findOne({jobId:j._id,number:3});
    const nonce=S.hash(task.id+':0').slice(0,12);
-   await S.Task.updateOne({_id:task._id},{$unset:{groupFrom:1},$set:{units:12,repair:2,code:'translation_quality_failed'}});
+   await S.Task.updateOne({_id:task._id},{$unset:{wholeChapter:1},$set:{groupFrom:1,units:3,repair:2,code:'translation_quality_failed'}});
    await S.Job.updateOne({_id:j._id},{$set:{status:'blocked',blockedCode:'translation_quality_failed'}});
    await S.Call.create({_id:'prior-live-reply',jobId:j._id,taskId:task._id,state:'received',
     operation:task.id+':account:test:generation:0:translate:0:repair:2:legacy',reply:`${translatedParagraph}\n[[END_${nonce}]]`});
@@ -148,8 +150,35 @@ test('durable engine with real replica-set transactions', {skip:!uri},async t=>{
    assert.equal((await S.Task.findById(task.id)).units,3);
    const result=await run(p,j);
    assert.equal(result.status,'completed');assert.equal(result.successCount,2);
-   assert.equal(generations,4);assert.equal(extractions,5);
+   assert.equal(generations,3);assert.equal(extractions,4);
+   assert.equal((await S.Task.findOne({jobId:j._id,number:4})).wholeChapter,true);
    for(const number of [3,4])assert.equal(db.docs.get(j.novelId+':'+number).content.split(/\n+/).length,12);
+  });
+  await t.test('resume extracts a whole chapter from its saved translation and sends no translation request',async()=>{
+   const n=await novel(),j=await make('smart_translate',n,[3]),db=fakeFirestore();
+   const raw=Array.from({length:9},(_,i)=>`In the ancient city, chapter event ${i} began.`).join('\n\n');
+   const saved='النص الكامل للفصل محفوظ قبل بدء استخراج المصطلحات.';
+   const operations=[];
+   const p=processor(db,{source:async()=>raw,provider:async(prompt,{operation})=>{
+    operations.push(operation);
+    assert.equal(operation,'extract:0:repair:0');
+    assert.ok(prompt.includes(raw));
+    assert.ok(prompt.includes(saved));
+    return '[{"name":"ancient city","translation":"المدينة القديمة","category":"location"}]';
+   }});
+   await p.tick();
+   const task=await S.Task.findOne({jobId:j._id});
+   await S.immutable(task.id+':translation',saved,{jobId:j._id,taskId:task._id,kind:'translation'});
+   await S.Task.updateOne({_id:task._id},{$unset:{wholeChapter:1},$set:{groupFrom:1,stage:'extract',units:7,unit:7,repair:2,code:'glossary_quality_failed'}});
+   await S.Job.updateOne({_id:j._id},{$set:{status:'blocked',blockedCode:'glossary_quality_failed'}});
+   await S.transition(j.id,'resume');
+   const resumed=await S.Task.findById(task.id);
+   assert.equal(resumed.wholeChapter,true);
+   assert.equal(resumed.units,1);
+   assert.equal((await run(p,j)).status,'completed');
+   assert.deepEqual(operations,['extract:0:repair:0']);
+   assert.equal(db.docs.get(j.novelId+':3').content,saved);
+   assert.equal(await Glossary.countDocuments({novelId:n._id}),1);
   });
   await t.test('invalid extraction stays pending and does not publish a smart chapter',async()=>{
    const n=await novel(),j=await make('glossary_extract',n),db=fakeFirestore();

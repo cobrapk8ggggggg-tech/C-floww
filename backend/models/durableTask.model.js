@@ -2,7 +2,7 @@
 const m=require('mongoose');
 const schema=new m.Schema({
  jobId:{type:m.Schema.Types.ObjectId,required:true,index:true},number:{type:Number,required:true},ordinal:{type:Number,required:true},
- stage:{type:String,default:'source'},unit:{type:Number,default:0},units:{type:Number,default:0},groupFrom:Number,
+ stage:{type:String,default:'source'},unit:{type:Number,default:0},units:{type:Number,default:0},groupFrom:Number,wholeChapter:Boolean,
  repair:{type:Number,default:0},extractionUnit:{type:Number,default:0},
  state:{type:String,enum:['pending','verified','blocked','failed'],default:'pending'},
  code:{type:String,default:''},sourceHash:String,glossaryRef:String,

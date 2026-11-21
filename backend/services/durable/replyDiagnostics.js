@@ -5,8 +5,13 @@ const {durableUnits,parseCoveredReply,parseDurableReply}=require('../completeTra
 async function replyDiagnostics(job){
  const task=await S.Task.findOne({jobId:job._id,state:'pending'}).sort({ordinal:1});
  if(!task)return null;
+ if(task.stage==='extract'){
+  const translation=await S.Artifact.findById(task.id+':translation').select('text hash').lean();
+  return {chapter:task.number,stage:task.stage,translationSaved:Boolean(translation&&S.hash(translation.text)===translation.hash),
+   wholeChapter:task.wholeChapter===true,wholeChapterOnResume:S.resumeWholeExtraction(job,task)};
+ }
  const source=await S.Artifact.findById(task.id+':source').select('text').lean();
- const unit=source&&durableUnits(source.text,job.config?.chunkSize||2400,task.groupFrom)[task.unit];
+ const unit=source&&durableUnits(source.text,job.config?.chunkSize||2400,task.groupFrom,task.wholeChapter)[task.unit];
  if(!unit)return {chapter:task.number,stage:task.stage,unit:task.unit+1};
  const nonce=S.hash(task.id+':'+task.unit).slice(0,12);
  const start=`[[${nonce}_${unit.id}]]`,end=`[[END_${nonce}]]`;

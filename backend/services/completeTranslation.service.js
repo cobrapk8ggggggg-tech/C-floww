@@ -43,7 +43,8 @@ function parseCoveredReply(reply, units, nonce) {
         return text;
     });
 }
-function durableUnits(source, maxChars, groupFrom) {
+function durableUnits(source, maxChars, groupFrom, wholeChapter = false) {
+    if (wholeChapter) return [{ id: '000001', text: source }];
     const units = splitSource(source, maxChars);
     if (groupFrom == null) return units;
     const grouped = units.slice(0, groupFrom).map(unit => unit.text);
@@ -83,7 +84,7 @@ function parseDurableReply(reply, unit, nonce) {
     if (/\[\[[a-z\d_]{1,32}\]\]|```/i.test(arabic) || /^\[[a-z\d_]{8,32}\]/i.test(arabic)) {
         throw new IncompleteTranslationError('Unexpected translation markers');
     }
-    const paragraphs = unit.text.split(/\n\s*\n/);
+    const paragraphs = unit.text.trim().split(/\n\s*\n/);
     const lines = arabic.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
     if (lines.length < paragraphs.length || paragraphs.some(p => !/\p{L}/u.test(p) && !lines.includes(p.trim()))) {
         throw new IncompleteTranslationError('Missing translated paragraphs or separators');

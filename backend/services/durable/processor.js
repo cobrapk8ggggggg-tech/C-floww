@@ -214,16 +214,14 @@ function createProcessor(deps={}){
    const text=typeof original==='string'?original:original?.content;
    if(!text?.trim())throw problem('source_missing');
    if(original?.contentHash&&S.hash(text)!==original.contentHash)throw problem('source_corrupt');
-   const units=durableUnits(text,job.config.chunkSize||2400,0);
-   if(!units.length)throw problem('source_missing');
    const terms=job.kind==='pure_translate'?JSON.parse(await read(job.id+':glossary')):
     deps.glossary?await deps.glossary(job):await Glossary.find({novelId:job.novelId}).select('term translation -_id').lean();
-   return S.advance(c,{stage:job.kind==='glossary_extract'?'extract':'generate',sourceHash:S.hash(text),groupFrom:0,units:units.length,glossaryRef:artifactId(c,'glossary')},[
+   return S.advance(c,{stage:job.kind==='glossary_extract'?'extract':'generate',sourceHash:S.hash(text),wholeChapter:true,units:1,glossaryRef:artifactId(c,'glossary')},[
     {id:artifactId(c,'source'),text,kind:'original'},
     {id:artifactId(c,'glossary'),text:JSON.stringify(terms),kind:'glossary_snapshot'}]);
   }
   const source=await read(artifactId(c,'source'));
-  const units=durableUnits(source,job.config.chunkSize||2400,task.groupFrom);
+  const units=durableUnits(source,job.config.chunkSize||2400,task.groupFrom,task.wholeChapter);
   const glossary=JSON.parse(await read(task.glossaryRef));
   const glossaryText=glossary.map(x=>`${x.term}: ${x.translation}`).join('\n');
   if(task.stage==='generate'){
@@ -243,7 +241,7 @@ function createProcessor(deps={}){
     return saveCandidate(candidate);
    }
    const marked=`[[${nonce}_${unit.id}]]\n${unit.text}`;
-   const count=unit.text.split(/\n\s*\n/).length;
+   const count=unit.text.trim().split(/\n\s*\n/).length;
    const prompt=`${job.config.prompt||'Translate the complete supplied text into Arabic.'}\nGLOSSARY:\n${glossaryText}\n`+
     `Translate only the source below. Preserve all ${count} source paragraphs in order, starting each on a separate line. Copy separators unchanged. Preserve all dialogue. Never summarize or omit content.\n`+
     `Begin directly with the Arabic. The source's opening tag may be omitted. End with [[END_${nonce}]] on its own line.\n${marked}`+
@@ -288,7 +286,7 @@ function createProcessor(deps={}){
   }
   if(task.stage==='extract'){
    const i=task.extractionUnit,unit=units[i];
-   const arabic=job.kind==='smart_translate'?await read(artifactId(c,'unit:'+i)):'';
+   const arabic=job.kind==='smart_translate'?await read(artifactId(c,task.wholeChapter?'translation':'unit:'+i)):'';
    const prompt=`${job.config.extractPrompt||'Extract novel terminology: characters, locations, items, ranks and concepts; translate into Arabic.'}\n`+
     `Return ONLY a JSON array of {term,translation,category,description}. An empty array is valid when no terms exist.\n`+
     `SOURCE:\n${unit.text}\nARABIC:\n${arabic}`;
