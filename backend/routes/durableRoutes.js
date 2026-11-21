@@ -7,6 +7,7 @@ const Glossary=require('../models/glossary.model');
 const legacyState=require('../services/durable/legacyState');
 const watchSchedule=require('../services/durable/watchSchedule');
 const {parseScrapeSelection}=require('../services/durable/scrapeSelection');
+const {staleAfterMs,wasInterrupted,configuredProviders,recoverSavedFirst}=require('../services/durable/legacyTranslation');
 const {chapterNumbers,sourceUrl,validCoordinatorSecret}=require('./automationRoutes').__test;
 const KINDS=['scrape','smart_translate','pure_translate','glossary_extract'];
 const idOK=v=>typeof v==='string'&&/^[a-f\d]{24}$/i.test(v);
@@ -41,13 +42,13 @@ module.exports=function mount(app,verifyAdmin,deps={}){
    res.status(error.status||503).json({error:error.status?error.message:'Durable operation unavailable'});
   }
  };
- async function create(body,user,key,{wake=true,watchSweep=false}={}){
+ async function create(body,user,key,{wake=true,watchSweep=false,fromLegacyControl=false,transfer}={}){
   const kind=body.kind||'scrape';if(!KINDS.includes(kind))throw Object.assign(Error('Invalid kind'),{status:400});
   const selection=kind==='scrape'&&body.chapterSpec!==undefined?parseScrapeSelection(body.chapterSpec,watchSweep):null;
   const chapters=selection?.chapters||chapterNumbers(body);
   const sourceSelection=body.sourceSelection||'verified_original';
   if(!['verified_original','current_content'].includes(sourceSelection))throw Object.assign(Error('Invalid source selection'),{status:400});
-  const payload={kind,chapters,sourceSelection,adminEmail:user.email||'system@auto'};
+  const payload={kind,chapters,sourceSelection,adminEmail:user.email||'system@auto',...(transfer?{_id:transfer.old._id}:{})};
   if(key&&(!/^[\x21-\x7e]{1,128}$/.test(key)))throw Object.assign(Error('Invalid Idempotency-Key'),{status:400});
   const requestedSource=kind==='scrape'?sourceUrl(body.sourceUrl):undefined;
   const fingerprint=S.hash({kind,chapters,sourceSelection,...(selection?.catalogPlan?{plan:selection.catalogPlan}:{}),
@@ -77,20 +78,25 @@ module.exports=function mount(app,verifyAdmin,deps={}){
   }
   if(kind!=='scrape'){
    for(const name of ['translationJob','pureTranslationJob','glossaryExtractionJob']){
-    if(await require('../models/'+name+'.model').exists({novelId:novel._id,status:'active'}))
+    if(await require('../models/'+name+'.model').exists({novelId:novel._id,status:'active',...(transfer?{_id:{$ne:transfer.old._id}}:{})}))
      throw Object.assign(Error('legacy_job_active'),{status:409});
    }
    const settings=deps.settings?await deps.settings():await require('./translatorRoutes')._ai.getGlobalSettings();
-   const ordered=(settings?.translationProviders||[]).slice().sort((a,b)=>(a.priority||0)-(b.priority||0));
+   const ordered=configuredProviders(settings);
    const provider=ordered[0];
    if(!provider)throw Object.assign(Error('provider_missing'),{status:400});
    config={providerId:provider.providerId,model:provider.selectedModel||provider.models?.[0]?.modelId,
-    providerSignature:providerSignature(provider),routes:ordered.map(p=>({providerId:p.providerId,model:p.selectedModel||p.models?.[0]?.modelId,providerSignature:providerSignature(p)})),routeIndex:0,prompt:settings.customPrompt||'',extractPrompt:settings.extractPrompt||'',chunkSize:2400,keyIndex:0};
+    providerSignature:providerSignature(provider),routes:ordered.map(p=>({providerId:p.providerId,model:p.selectedModel||p.models?.[0]?.modelId,providerSignature:providerSignature(p)})),routeIndex:0,
+    prompt:settings.customPrompt||'',extractPrompt:settings.translatorExtractPrompt||settings.extractPrompt||'',chunkSize:2400,keyIndex:0,
+    existingProvidersAuthorized:fromLegacyControl,novelTitle:novel.title,cover:novel.cover,
+    chapterDelayMs:Math.max(0,Math.min(3600000,Number(body.chapterDelayMs??(kind==='glossary_extract'?3000:2000))||0)),
+    ...(transfer?{priorCompleted:transfer.priorCompleted,priorLastChapter:transfer.priorLastChapter}:{} )};
    if((process.env.AUTOMATION_LONG_PROVIDER_IDS||'').split(',').includes(provider.providerId))payload.workerClass='long';
    if(!config.model)throw Object.assign(Error('provider_model_missing'),{status:400});
    if(kind==='pure_translate')glossary=await Glossary.find({novelId:novel._id}).select('term translation -_id').lean();
   }
   const result=await S.createJob({payload,config,glossary,ownerId:user.id,idempotencyKey:key,requestFingerprint:fingerprint,
+   retireLegacy:transfer?.retire,
    novelKey:novel?'novel:'+novel.id:'source:'+S.hash(payload.sourceUrl)});
   if(result.created&&config.watchRequested&&novel)await Novel.updateOne({_id:novel._id},{$set:{isWatched:true}});
   if(wake)await wakeCoordinator();
@@ -243,14 +249,61 @@ module.exports=function mount(app,verifyAdmin,deps={}){
  // Existing frontend starts retain their response shape; only the opt-in mode is routed here.
  for(const [prefix,kind] of [['/api/translator','smart_translate'],['/api/pure-translate','pure_translate'],['/api/glossary-ai','glossary_extract']]){
   const legacyModel=require('../models/'+({'smart_translate':'translationJob','pure_translate':'pureTranslationJob','glossary_extract':'glossaryExtractionJob'}[kind])+'.model');
-  const legacyView=async j=>({...view(j),_id:j.id,status:['queued','running','retry_wait'].includes(j.status)?'active':j.status,
-   novelId:j.novelId,totalToTranslate:j.chapters.length,totalToExtract:j.chapters.length,translatedCount:j.successCount,processedCount:j.successCount,
-   targetChapters:(await S.Task.find({jobId:j._id,state:{$ne:'verified'}}).sort({ordinal:1})).map(t=>t.number),logs:[]});
+  const legacyView=async(j,details=false)=>{
+   const pending=await S.Task.find({jobId:j._id,state:{$ne:'verified'}}).select('number stage').sort({ordinal:1});
+   const previous=j.config?.priorCompleted||0,done=previous+j.successCount,total=previous+j.chapters.length;
+   const logs=details?(await S.Event.find({jobId:j._id}).sort({_id:-1}).limit(100)).reverse().map(e=>({
+    timestamp:e.createdAt,type:e.code==='completed'?'success':e.type,
+    message:e.code==='completed'?'اكتملت المهمة وحُفظت الفصول':e.code==='stage_committed'?`الفصل ${e.chapter}: حُفظ تقدم مرحلة ${e.stage}`:`الفصل ${e.chapter||'—'}: ${e.code}`
+   })):[];
+   if(details&&j.status==='blocked')logs.push({timestamp:j.updatedAt,type:'error',message:`توقفت المهمة: ${j.blockedCode||j.lastError}. يمكنك الاستئناف بعد معالجة السبب.`});
+   return {...view(j),_id:j.id,status:['queued','running','retry_wait'].includes(j.status)?'active':j.status==='blocked'?'paused':j.status,
+    novelTitle:j.config?.novelTitle||j.label,cover:j.config?.cover,chapterDelayMs:j.config?.chapterDelayMs,
+    startTime:j.createdAt,lastUpdate:j.updatedAt,currentChapter:pending[0]?.number||j.chapters.at(-1)||j.config?.priorLastChapter,
+    totalToTranslate:total,totalToExtract:total,translatedCount:done,processedCount:done,
+    targetChapters:pending.map(t=>t.number),logs};
+  };
+  const oldView=j=>{
+   const interrupted=replaceLegacyStart()&&wasInterrupted(j);
+   return {...j,id:String(j._id),status:interrupted?'paused':j.status,verification:'legacy_unverified',
+    ...(interrupted?{logs:[...(j.logs||[]),{timestamp:j.updatedAt,type:'warning',message:'توقف العامل القديم. اضغط استئناف لمتابعة الفصول المتبقية من آخر حفظ.'}]}:{})};
+  };
   app.post(prefix+'/start',verifyAdmin,wrap(async(req,res,next)=>{
    if(!replaceLegacyStart())return next();const user=await identity(req);
    if(req.body.jobId){
-    const j=await S.Job.findOne({_id:req.body.jobId,kind,engineVersion:2,...scope(user)});if(!j)return res.status(409).json({error:'legacy_job_requires_reconciliation'});
-    const resumed=await S.transition(j.id,'resume',scope(user));return resumed?res.json({jobId:j.id,message:'Job resumed'}):res.status(409).json({error:'Invalid transition'});
+    if(!idOK(req.body.jobId))return res.sendStatus(400);
+    const j=await S.Job.findOne({_id:req.body.jobId,kind,engineVersion:2,...scope(user)});
+    if(j){
+     if(j.status==='completed')return res.json({jobId:j.id,message:'Job completed'});
+     if(['queued','running','retry_wait'].includes(j.status))return res.json({jobId:j.id,message:'Job already scheduled'});
+     const resumed=await S.transition(j.id,'resume',scope(user));
+     if(resumed)await wakeCoordinator();
+     return resumed?res.json({jobId:j.id,message:'Job resumed'}):res.status(409).json({error:'Invalid transition'});
+    }
+    const old=await legacyModel.findById(req.body.jobId).select('-apiKeys');
+    const novel=old&&await Novel.findById(old.novelId);
+    if(!novel||(!user.admin&&String(novel.authorId)!==user.id))return res.sendStatus(404);
+    const age=Date.now()-+new Date(old.updatedAt||old.lastUpdate||old.startTime);
+    if(old.status==='completed')return res.json({jobId:old.id,message:'Job completed'});
+    if(!Number.isFinite(age)||age<staleAfterMs)return res.status(409).json({error:'legacy_worker_still_within_deadline'});
+    const targets=chapterNumbers({chapters:[...old.targetChapters]});
+    const stored=kind==='glossary_extract'?null:await recoverSavedFirst(old,novel,targets,deps.firestore||require('../config/firebaseAdmin').db);
+    const remaining=stored===null?targets:targets.slice(1);
+    const priorCompleted=Number(kind==='glossary_extract'?old.processedCount:old.translatedCount)||0;
+    const filter={_id:old._id,status:old.status,updatedAt:old.updatedAt,targetChapters:old.targetChapters};
+    if(!remaining.length){
+     const confirmed=await legacyModel.updateOne(filter,{$set:{status:'completed',targetChapters:[],currentChapter:stored,translatedCount:priorCompleted+1,lastUpdate:new Date()},
+      $push:{logs:{message:'تأكد حفظ الفصل المتبقي دون إعادة ترجمته.',type:'success',timestamp:new Date()}}});
+     return confirmed.modifiedCount?res.json({jobId:old.id,message:'Job completed'}):res.status(409).json({error:'legacy_job_changed'});
+    }
+    const retire=async session=>{
+     const retired=await legacyModel.updateOne(filter,{$set:{status:'paused'},
+      $push:{logs:{message:'نُقلت الفصول المتبقية إلى عامل ZEUS المحفوظ.',type:'info',timestamp:new Date()}}},{session});
+     if(retired.modifiedCount!==1)throw Object.assign(Error('legacy_job_changed'),{status:409});
+    };
+    const continued=await create({kind,novelId:String(novel._id),chapters:remaining,sourceSelection:'current_content',chapterDelayMs:old.chapterDelayMs},
+     user,'legacy-resume:'+old.id,{fromLegacyControl:true,transfer:{old,retire,priorCompleted:priorCompleted+(stored===null?0:1),priorLastChapter:stored||old.currentChapter}});
+    return res.json({jobId:continued.job.id,message:'Durable job resumed'});
    }
    let body={...req.body,kind,sourceSelection:req.body.sourceSelection||'current_content'};
    if(body.chapters==='all'||body.chapters===undefined){
@@ -264,25 +317,26 @@ module.exports=function mount(app,verifyAdmin,deps={}){
     if(db){const refs=await db.collection('novels').doc(body.novelId).collection('chapters').listDocuments();for(const ref of refs){if(/^[1-9]\d*$/.test(ref.id))numbers.add(Number(ref.id));}}
     body.chapters=[...numbers].filter(n=>!body.resumeFrom||n>=body.resumeFrom);
    }
-   const r=await create(body,user,req.get('idempotency-key'));res.json({jobId:r.job.id,message:'Durable job queued'});
+   const r=await create(body,user,req.get('idempotency-key'),{fromLegacyControl:true});res.json({jobId:r.job.id,message:'Durable job queued'});
   }));
   app.get(prefix+'/jobs',verifyAdmin,wrap(async(req,res,next)=>{
    if(!enabled())return next();const user=await identity(req);
    const jobs=await S.Job.find({engineVersion:2,kind,...scope(user)}).sort({_id:-1}).limit(50);
    const owned=user.admin?null:(await Novel.find({authorId:user.id}).select('_id')).map(n=>n._id);
    const old=await legacyModel.find(user.admin?{}:{novelId:{$in:owned}}).select('-apiKeys').sort({_id:-1}).limit(50).lean();
-   const combined=[...await Promise.all(jobs.map(legacyView)),...old.map(j=>({...j,id:String(j._id),verification:'legacy_unverified'}))];
+   const durableIds=new Set(jobs.map(j=>j.id));
+   const combined=[...await Promise.all(jobs.map(j=>legacyView(j))),...old.filter(j=>!durableIds.has(String(j._id))).map(oldView)];
    res.json(combined.sort((a,b)=>String(b._id).localeCompare(String(a._id))).slice(0,50));
   }));
   app.get(prefix+'/jobs/:id',verifyAdmin,wrap(async(req,res,next)=>{
    if(!idOK(req.params.id))return res.sendStatus(400);
    const user=await identity(req);
    const j=await S.Job.findOne({_id:req.params.id,engineVersion:2,kind,...scope(user)});
-   if(j)return res.json(await legacyView(j));
+   if(j)return res.json(await legacyView(j,true));
    if(!enabled())return next();
    const old=await legacyModel.findById(req.params.id).select('-apiKeys').lean();
    if(!old||(!user.admin&&!await Novel.exists({_id:old.novelId,authorId:user.id})))return res.sendStatus(404);
-   res.json({...old,id:String(old._id),verification:'legacy_unverified'});
+   res.json(oldView(old));
   }));
   const legacyControl=async(req,res,next,user)=>{
    if(!enabled())return next();
@@ -292,7 +346,13 @@ module.exports=function mount(app,verifyAdmin,deps={}){
   };
   app.post(prefix+'/jobs/:id/delay',verifyAdmin,wrap(async(req,res,next)=>{
    if(!idOK(req.params.id))return res.sendStatus(400);
-   return legacyControl(req,res,next,await identity(req));
+   const user=await identity(req);
+   const where={_id:req.params.id,engineVersion:2,kind,...scope(user)};
+   if(!await S.Job.exists(where))return legacyControl(req,res,next,user);
+   const delay=Number(req.body?.chapterDelayMs);
+   if(!Number.isFinite(delay)||delay<0||delay>3600000)return res.sendStatus(400);
+   await S.Job.updateOne(where,{$set:{'config.chapterDelayMs':Math.round(delay)}});
+   return res.json({message:'Delay updated',chapterDelayMs:Math.round(delay)});
   }));
   app.post(prefix+'/jobs/:id/pause',verifyAdmin,wrap(async(req,res,next)=>{
    if(!idOK(req.params.id))return res.sendStatus(400);const user=await identity(req),q=scope(user);

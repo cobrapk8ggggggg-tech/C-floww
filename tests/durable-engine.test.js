@@ -56,7 +56,7 @@ test('durable engine with real replica-set transactions', {skip:!uri},async t=>{
    })).job;
    const conflict=await createScrape(source);
    const independent=await createScrape('https://www.novel543.com/1013000001/');
-   const translation=await make('pure_translate',await novel());
+   const translation=await make('pure_translate',activeNovel);
    const p=processor(fakeFirestore(),{trustTestScrape:true,scrape:async(job,task)=>{
     assert.equal(job.id,independent.id);
     return {ok:true,chapterNumber:task.number,receiptId:'synthetic-receipt'};

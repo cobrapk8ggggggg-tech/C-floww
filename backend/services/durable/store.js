@@ -33,6 +33,7 @@ async function createJob(input){
    job.chapters.map((number,ordinal)=>({jobId:job._id,number,ordinal}));
   await Task.insertMany(tasks,{session});
   if(input.glossary!==undefined)await immutable(job.id+':glossary',JSON.stringify(input.glossary),{jobId:job._id,kind:'glossary_snapshot'},session);
+  if(input.retireLegacy)await input.retireLegacy(session);
   return {job,created:true};
  });}catch(e){if(e.code===11000){if(requestKey){const j=await Job.findOne({requestKey});if(j&&j.requestHash===requestHash)return {job:j,created:false};}throw Object.assign(Error('novel_busy_or_idempotency_conflict'),{status:409});}throw e;}
 }
@@ -101,8 +102,9 @@ async function advance(c,patch={},artifacts=[],sideEffect){return transaction(as
   const numbers=(await Task.find({jobId:c.job._id}).select('number').session(session)).map(t=>t.number).sort((a,b)=>a-b);
   if(numbers.some((n,i)=>n!==c.job.chapters[i]))throw Object.assign(Error('manifest_mismatch'),{code:'manifest_mismatch',blocked:true});
  }
+ const delay=patch.state==='verified'&&!completed?Number(c.job.config?.chapterDelayMs)||0:0;
  const committed=await Job.updateOne(owned(c),{$set:{successCount:done,cursor:done,status:completed?'completed':'queued',
-  attempts:0,lastError:'',leaseToken:'',leaseUntil:new Date(0),nextRunAt:new Date(),...(completed?{finishedAt:new Date()}: {})},
+  attempts:0,lastError:'',leaseToken:'',leaseUntil:new Date(0),nextRunAt:new Date(Date.now()+delay),...(completed?{finishedAt:new Date()}: {})},
   ...(completed?{$unset:{novelKey:1,sourceKey:1}}:{})},{session});
  if(committed.modifiedCount!==1)throw new StaleLease();
  await Event.create([{jobId:c.job._id,chapter:c.task.number,stage:c.task.stage,code:completed?'completed':'stage_committed'}],{session});

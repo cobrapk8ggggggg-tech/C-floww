@@ -24,10 +24,9 @@ async function executionPolicy(kinds){
  if(oldScrape||oldTitleScrape)return {kinds:[],scope:{}};
  const novelIds=[...new Set(activeTranslations.flat().map(String))];
  if(!novelIds.length)return {kinds,scope:{}};
- // Leave new translations paused until reconciliation. Allow scrapes on
- // unrelated novels, including jobs whose novelId will be discovered on import.
+ // The legacy worker only conflicts with a job on the same novel.
  const sourceUrls=await Novel.distinct('sourceUrl',{_id:{$in:novelIds},sourceUrl:{$type:'string'}});
- return {kinds:kinds.filter(kind=>kind==='scrape'),scope:{
+ return {kinds,scope:{
   novelId:{$nin:novelIds},sourceUrl:{$nin:sourceUrls}
  }};
 }

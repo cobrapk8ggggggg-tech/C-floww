@@ -7,6 +7,7 @@ const Import=require('../../models/importChapter.model');
 const Mirror=require('../../models/chapterContentMirror.model');
 const Conversation=require('../../models/providerConversation.model');
 const AccountState=require('../../models/durableAccountState.model');
+const {configuredProviders}=require('./legacyTranslation');
 const {splitSource,parseCoveredReply}=require('../completeTranslation.service');
 const problem=(code,blocked=true)=>Object.assign(Error(code),{code,blocked});
 const artifactId=(c,kind)=>`${c.task.id}:${kind}`;
@@ -38,7 +39,7 @@ function createProcessor(deps={}){
  async function route(job){
   if(deps.route)return deps.route(job);
   const settings=await ai().getGlobalSettings();
-  const providers=(settings?.translationProviders||[]).slice().sort((a,b)=>(a.priority||0)-(b.priority||0));
+  const providers=configuredProviders(settings);
   const routes=job.config.routes||[job.config];
   let index=job.config.routeIndex||0,slot=job.config.keyIndex||0;
   for(;index<routes.length;index++,slot=0){
@@ -62,9 +63,13 @@ function createProcessor(deps={}){
     const state=await AccountState.findById(account);
     if(state&&(state.dead||state.until>new Date()))continue;
     const allowed=(process.env.AUTOMATION_FREE_PROVIDER_IDS||'').split(',').filter(Boolean);
-    if(!allowed.includes(provider.providerId))throw problem('budget_approval_required');
+    const free=allowed.includes(provider.providerId);
+    // The authenticated, explicit legacy Start/Resume action is the same
+    // authority that called these configured providers before the migration.
+    const operatorAssigned=job.config?.existingProvidersAuthorized===true;
+    if(!free&&!operatorAssigned)throw problem('budget_approval_required');
     const next=slot+1<keys.length?{routeIndex:index,keyIndex:slot+1}:index+1<routes.length?{routeIndex:index+1,keyIndex:0}:null;
-    return {provider,key,model:selected.model,free:true,next,account};
+    return {provider,key,model:selected.model,free,operatorAssigned,next,account};
    }
    if(qwen&&process.env.AUTOMATION_QWEN_ACCOUNT_SETUP==='true'){
     if(!(process.env.AUTOMATION_FREE_PROVIDER_IDS||'').split(',').includes(provider.providerId))throw problem('budget_approval_required');
@@ -88,7 +93,7 @@ function createProcessor(deps={}){
   }
 
   const r=await route(c.job);
-  if(!r.free)throw problem('budget_approval_required');
+  if(!r.free&&!r.operatorAssigned)throw problem('budget_approval_required');
   await S.resource(c,'account:'+r.account);
   const base=artifactId(c,'account:'+r.account+':generation:'+c.task.generation+':'+operation+':'+S.hash(prompt));
   // A stored response is reused even when the worker died before stage commit.
