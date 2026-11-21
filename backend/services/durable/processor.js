@@ -302,10 +302,11 @@ function createProcessor(deps={}){
  }
  async function tick(kinds=['scrape','smart_translate','pure_translate','glossary_extract']){
   const invokedAt=Date.now();
-  if(await require('./legacyState').active())return {ok:true,disabled:true,code:'legacy_jobs_require_reconciliation'};
-  const c=await S.claim(kinds,{longWorker:deps.longWorker===true});
+  const policy=await require('./legacyState').executionPolicy(kinds);
+  if(!policy.kinds.length)return {ok:true,disabled:true,code:'legacy_jobs_require_reconciliation'};
+  const c=await S.claim(policy.kinds,{longWorker:deps.longWorker===true,scope:policy.scope});
   if(!c){
-   const waiting=await S.Job.find({engineVersion:2,kind:{$in:kinds},status:{$in:['queued','running','retry_wait']},...(deps.longWorker?{}:{workerClass:{$ne:'long'}})}).select('nextRunAt leaseUntil').sort({nextRunAt:1}).limit(50);
+   const waiting=await S.Job.find({engineVersion:2,...policy.scope,kind:{$in:policy.kinds},status:{$in:['queued','running','retry_wait']},...(deps.longWorker?{}:{workerClass:{$ne:'long'}})}).select('nextRunAt leaseUntil').sort({nextRunAt:1}).limit(50);
    const times=waiting.map(j=>Math.max(+j.nextRunAt,+j.leaseUntil)-Date.now()).filter(ms=>ms>0);
    return {ok:true,idle:true,...(times.length?{retryAfterMs:Math.min(...times)}:{})};
   }

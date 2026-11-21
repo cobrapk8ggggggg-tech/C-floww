@@ -4,6 +4,7 @@ const {createProcessor}=require('../services/durable/processor');
 const Novel=require('../models/novel.model');
 const User=require('../models/user.model');
 const Glossary=require('../models/glossary.model');
+const legacyState=require('../services/durable/legacyState');
 const {chapterNumbers,sourceUrl,validCoordinatorSecret}=require('./automationRoutes').__test;
 const KINDS=['scrape','smart_translate','pure_translate','glossary_extract'];
 const idOK=v=>typeof v==='string'&&/^[a-f\d]{24}$/i.test(v);
@@ -80,7 +81,7 @@ module.exports=function mount(app,verifyAdmin,deps={}){
  }
  app.get('/api/automation/migration-report',verifyAdmin,wrap(async(req,res)=>{
   if(!(await identity(req)).admin)return res.sendStatus(403);
-  res.json(await require('../services/durable/legacyState').report());
+  res.json(await legacyState.report());
  }));
  app.post('/api/automation/jobs',verifyAdmin,wrap(async(req,res,next)=>{
   if(!enabled())return next();
@@ -135,8 +136,9 @@ module.exports=function mount(app,verifyAdmin,deps={}){
  app.post('/api/automation/worker/scrape/claim',wrap(async(req,res)=>{
   if(!privateAuth(req,res))return;
   if(!enabled())return res.json({ok:true,disabled:true});
-  if(await require('../services/durable/legacyState').active())return res.json({ok:true,disabled:true,code:'legacy_jobs_require_reconciliation'});
-  const c=await S.claim(['scrape'],{longWorker:true});if(!c)return res.json({ok:true,idle:true});
+  const policy=await legacyState.executionPolicy(['scrape']);
+  if(!policy.kinds.length)return res.json({ok:true,disabled:true,code:'legacy_jobs_require_reconciliation'});
+  const c=await S.claim(policy.kinds,{longWorker:true,scope:policy.scope});if(!c)return res.json({ok:true,idle:true});
   try{await S.resource(c,'source:'+new URL(c.job.sourceUrl).hostname);}
   catch{await S.settle(c,'source_busy');await S.release(c);return res.json({ok:true,idle:true});}
   res.json({ok:true,jobId:c.job.id,taskId:c.task.id,token:c.token,fence:c.fence,sourceUrl:c.job.sourceUrl,chapterNumber:c.task.number});
@@ -178,7 +180,11 @@ module.exports=function mount(app,verifyAdmin,deps={}){
    return res.json({ok:true,firestoreReadable:true});
   }
   const kinds=[];
-  if(enabled()&&await S.Job.exists({engineVersion:2,workerClass:{$ne:'long'},status:{$in:['queued','running','retry_wait']},leaseUntil:{$lte:new Date()},nextRunAt:{$lte:new Date()}}))kinds.push('v2');
+  if(enabled()){
+   const policy=await legacyState.executionPolicy(KINDS);
+   if(policy.kinds.length&&await S.Job.exists({engineVersion:2,...policy.scope,kind:{$in:policy.kinds},workerClass:{$ne:'long'},
+    status:{$in:['queued','running','retry_wait']},leaseUntil:{$lte:new Date()},nextRunAt:{$lte:new Date()}}))kinds.push('v2');
+  }
   if(await S.Job.exists({engineVersion:{$ne:2},status:{$in:['queued','running']},leaseUntil:{$lte:new Date()},nextRunAt:{$lte:new Date()}}))kinds.push('scrape');
   for(const [flag,name,kind] of [['DURABLE_PURE_TRANSLATION','pureTranslationJob','pure'],['DURABLE_SMART_TRANSLATION','translationJob','smart']]){
    if(process.env[flag]==='true'&&await require('../models/'+name+'.model').exists({durableMode:true,status:'active',leaseUntil:{$lte:new Date()},nextRunAt:{$lte:new Date()}}))kinds.push(kind);

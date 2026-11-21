@@ -45,6 +45,34 @@ test('durable engine with real replica-set transactions', {skip:!uri},async t=>{
    await assert.rejects(()=>make('pure_translate',n,[1,3],'same'),/idempotency_conflict/);
    await S.transition(j.id,'cancel');
   });
+  await t.test('legacy translation protects its novel without stalling unrelated scraping',async()=>{
+   const source='https://www.novel543.com/1013000000/';
+   const activeNovel=await Novel.create({title:'Existing legacy novel',author:'Owner',sourceUrl:source});
+   const Legacy=require('../backend/models/translationJob.model');
+   const legacy=await Legacy.create({novelId:activeNovel._id,status:'active',targetChapters:[1]});
+   const createScrape=async(sourceUrl)=>(await S.createJob({
+    payload:{kind:'scrape',sourceUrl,chapters:[1]},ownerId:'owner',novelKey:'source:'+S.hash(sourceUrl)
+   })).job;
+   const conflict=await createScrape(source);
+   const independent=await createScrape('https://www.novel543.com/1013000001/');
+   const translation=await make('pure_translate',await novel());
+   const p=processor(fakeFirestore(),{trustTestScrape:true,scrape:async(job,task)=>{
+    assert.equal(job.id,independent.id);
+    return {ok:true,chapterNumber:task.number,receiptId:'synthetic-receipt'};
+   }});
+   try{
+    assert.equal((await p.tick()).jobId,independent.id);
+    assert.equal((await S.Job.findById(independent.id)).status,'completed');
+    assert.equal((await p.tick()).idle,true);
+    assert.equal((await S.Job.findById(conflict.id)).status,'queued');
+    assert.equal((await S.Job.findById(translation.id)).status,'queued');
+    assert.equal((await Legacy.findById(legacy.id)).status,'active');
+   }finally{
+    await S.transition(conflict.id,'cancel');
+    await S.transition(translation.id,'cancel');
+    await Legacy.deleteOne({_id:legacy._id});
+   }
+  });
   await t.test('pause retains in-flight fence, stale worker cannot commit; reclaim after expiry',async()=>{
    const n=await novel(),j=await make('pure_translate',n);
    const c=await S.claim(['pure_translate']);assert.equal(c.job.id,j.id);

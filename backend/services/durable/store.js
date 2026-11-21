@@ -32,16 +32,16 @@ async function createJob(input){
   return {job,created:true};
  });}catch(e){if(e.code===11000){if(requestKey){const j=await Job.findOne({requestKey});if(j&&j.requestHash===requestHash)return {job:j,created:false};}throw Object.assign(Error('novel_busy_or_idempotency_conflict'),{status:409});}throw e;}
 }
-async function claim(kinds,{longWorker=false}={}){
+async function claim(kinds,{longWorker=false,scope={}}={}){
  await Lock.bulkWrite(['global:0','global:1','ai:0'].map(_id=>({updateOne:{filter:{_id},update:{$setOnInsert:{until:new Date(0)}},upsert:true}})));
  const started=Date.now();
- const candidates=await Job.find({engineVersion:2,...(longWorker?{}:{workerClass:{$ne:'long'}}),kind:{$in:kinds},status:{$in:['queued','running','retry_wait']},
+ const candidates=await Job.find({engineVersion:2,...scope,...(longWorker?{}:{workerClass:{$ne:'long'}}),kind:{$in:kinds},status:{$in:['queued','running','retry_wait']},
   nextRunAt:{$lte:new Date()},leaseUntil:{$lte:new Date()}}).sort({nextRunAt:1,createdAt:1}).limit(50);
  for(const candidate of candidates){
   if(Date.now()-started>10000)break;
   try{const c=await transaction(async session=>{
    const now=new Date(),token=crypto.randomUUID(),until=new Date(Date.now()+LEASE_MS);
-   const job=await Job.findOneAndUpdate({_id:candidate._id,status:{$in:['queued','running','retry_wait']},leaseUntil:{$lte:now},nextRunAt:{$lte:now}},
+   const job=await Job.findOneAndUpdate({_id:candidate._id,...scope,status:{$in:['queued','running','retry_wait']},leaseUntil:{$lte:now},nextRunAt:{$lte:now}},
     {$set:{status:'running',leaseToken:token,leaseUntil:until},$inc:{fence:1}},{new:true,session});
    if(!job)return null;
    const global=await Lock.findOneAndUpdate({_id:{$in:['global:0','global:1']},until:{$lte:now}},{$set:{token,jobId:job._id,until},$inc:{fence:1}},{new:true,session});
