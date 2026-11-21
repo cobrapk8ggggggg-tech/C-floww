@@ -77,6 +77,11 @@ test('the real legacy resume route publishes a saved chapter and continues witho
   assert.equal(response.status,200);
   assert.equal((await response.json()).jobId,old.id);
   assert.equal((await post(true)).status,200);
+  const checkNew=()=>fetch(root+'/api/pure-translate/start?validateOnly=1',{method:'POST',
+   headers:{'content-type':'application/json','x-test-admin':'true'},body:JSON.stringify({novelId:novel.id,chapters:[3]})});
+  const conflict=await checkNew();
+  assert.equal(conflict.status,409);
+  assert.deepEqual((await conflict.json()).job,{kind:'smart_translate',status:'queued',id:old.id});
   const current=await S.Job.findById(old.id);
   assert.deepEqual(current.chapters,[2,3,4]);
   assert.equal(current.config.priorCompleted,0);
@@ -112,6 +117,8 @@ test('the real legacy resume route publishes a saved chapter and continues witho
   assert.equal(documents.get('2').content,translated);
   assert.equal(documents.get('3').content.trim(),translated.trim());
   assert.equal(documents.get('4').content.trim(),translated.trim());
+  assert.deepEqual(await (await checkNew()).json(),{ok:true,validated:true});
+  assert.equal(await S.Job.countDocuments({novelId:novel.id}),1);
  }finally{
   if(server)await new Promise(resolve=>server.close(resolve));
   if(previous===undefined)delete process.env.DURABLE_ENGINE_V2;else process.env.DURABLE_ENGINE_V2=previous;

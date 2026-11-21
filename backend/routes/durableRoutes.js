@@ -39,10 +39,11 @@ module.exports=function mount(app,verifyAdmin,deps={}){
      codeName:safeLabel(error.codeName)
     });
    }
-   res.status(error.status||503).json({error:error.status?error.message:'Durable operation unavailable'});
+   res.status(error.status||503).json({error:error.status?error.message:'Durable operation unavailable',
+    ...(error.conflictingJob?{message:error.message,code:'novel_job_in_progress',job:error.conflictingJob}:{})});
   }
  };
- async function create(body,user,key,{wake=true,watchSweep=false,fromLegacyControl=false,transfer}={}){
+ async function create(body,user,key,{wake=true,watchSweep=false,fromLegacyControl=false,transfer,validateOnly=false}={}){
   const kind=body.kind||'scrape';if(!KINDS.includes(kind))throw Object.assign(Error('Invalid kind'),{status:400});
   const selection=kind==='scrape'&&body.chapterSpec!==undefined?parseScrapeSelection(body.chapterSpec,watchSweep):null;
   const chapters=selection?.chapters||chapterNumbers(body);
@@ -69,6 +70,11 @@ module.exports=function mount(app,verifyAdmin,deps={}){
   if(novel&&!user.admin&&String(novel.authorId)!==user.id)throw Object.assign(Error('Forbidden'),{status:403});
   payload.label=String(novel?.title||payload.sourceUrl||'').slice(0,300);
   if(novel)payload.novelId=novel._id;
+  if(novel&&kind!=='scrape'){
+   const conflict=await S.Job.findOne({novelKey:'novel:'+novel.id}).select('kind status ownerId').lean();
+   if(conflict)throw Object.assign(Error('توجد مهمة لم تنتهِ لهذه الرواية. افتح المهمة الحالية لاستئنافها أو إلغائها.'),{status:409,
+    conflictingJob:{kind:conflict.kind,status:conflict.status,...(user.admin||conflict.ownerId===user.id?{id:String(conflict._id)}:{})}});
+  }
   if(kind!=='scrape'&&novel?.sourceUrl&&await S.Job.exists({kind:'scrape',sourceUrl:novel.sourceUrl,status:{$nin:['completed','cancelled','failed']}}))throw Object.assign(Error('source_job_active'),{status:409});
   let config={},glossary;
   if(kind==='scrape'){
@@ -96,6 +102,7 @@ module.exports=function mount(app,verifyAdmin,deps={}){
    if(!config.model)throw Object.assign(Error('provider_model_missing'),{status:400});
    if(kind==='pure_translate')glossary=await Glossary.find({novelId:novel._id}).select('term translation -_id').lean();
   }
+  if(validateOnly)return {validated:true};
   const result=await S.createJob({payload,config,glossary,ownerId:user.id,idempotencyKey:key,requestFingerprint:fingerprint,
    retireLegacy:transfer?.retire,recoveredChapter:transfer?.recoveredChapter,
    novelKey:novel?'novel:'+novel.id:'source:'+S.hash(payload.sourceUrl)});
@@ -274,6 +281,7 @@ module.exports=function mount(app,verifyAdmin,deps={}){
   app.post(prefix+'/start',verifyAdmin,wrap(async(req,res,next)=>{
    if(!replaceLegacyStart())return next();const user=await identity(req);
    if(req.body.jobId){
+    if(req.query.validateOnly==='1')return res.status(400).json({error:'Validation accepts only new jobs'});
     if(!idOK(req.body.jobId))return res.sendStatus(400);
     const j=await S.Job.findOne({_id:req.body.jobId,kind,engineVersion:2,...scope(user)});
     if(j){
@@ -323,7 +331,8 @@ module.exports=function mount(app,verifyAdmin,deps={}){
     if(db){const refs=await db.collection('novels').doc(body.novelId).collection('chapters').listDocuments();for(const ref of refs){if(/^[1-9]\d*$/.test(ref.id))numbers.add(Number(ref.id));}}
     body.chapters=[...numbers].filter(n=>!body.resumeFrom||n>=body.resumeFrom);
    }
-   const r=await create(body,user,req.get('idempotency-key'),{fromLegacyControl:true});res.json({jobId:r.job.id,message:'Durable job queued'});
+   const r=await create(body,user,req.get('idempotency-key'),{fromLegacyControl:true,validateOnly:req.query.validateOnly==='1'});
+   res.json(r.validated?{ok:true,validated:true}:{jobId:r.job.id,message:'Durable job queued'});
   }));
   app.get(prefix+'/jobs',verifyAdmin,wrap(async(req,res,next)=>{
    if(!enabled())return next();const user=await identity(req);
@@ -338,7 +347,13 @@ module.exports=function mount(app,verifyAdmin,deps={}){
    if(!idOK(req.params.id))return res.sendStatus(400);
    const user=await identity(req);
    const j=await S.Job.findOne({_id:req.params.id,engineVersion:2,kind,...scope(user)});
-   if(j)return res.json(await legacyView(j,true));
+   if(j){
+    const details=await legacyView(j,true);
+    if(user.admin&&req.query.diagnostics==='1'&&kind!=='glossary_extract'){
+     details.translationDiagnostics=await require('../services/durable/replyDiagnostics')(j);
+    }
+    return res.json(details);
+   }
    if(!enabled())return next();
    const old=await legacyModel.findById(req.params.id).select('-apiKeys').lean();
    if(!old||(!user.admin&&!await Novel.exists({_id:old.novelId,authorId:user.id})))return res.sendStatus(404);
