@@ -1,6 +1,7 @@
 'use strict';
 const crypto = require('node:crypto');
 const authenticateIngest = require('../services/automationIngestAuth');
+const prepareScrapedNovel = require('../services/scrapedNovel.service');
 const {sourceUrl} = require('./automationRoutes').__test;
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
 const key = require('../models/importChapter.model').idForSource;
@@ -71,17 +72,9 @@ module.exports = function mount(app, deps = {}) {
         !Number.isSafeInteger(n)||n<1||n>1_000_000 || typeof chapter.content!=='string' ||
         !chapter.content.trim() || Buffer.byteLength(chapter.content)>900_000 ||
         typeof chapter.title!=='string' || !chapter.title.trim())return res.sendStatus(400);
-      // Do not match by title: different novels/sources may have identical titles.
-      const candidates=await Novel.find({sourceUrl:source}).select('_id').limit(2);
-      if(candidates.length>1)throw new Error('Ambiguous existing source identity');
-      const novelId=candidates[0]?._id || hash('automation-novel\n'+source).slice(0,24);
       const owner=req.body.jobId && /^[a-f\d]{24}$/i.test(req.body.jobId)
         ? await require('../models/automationJob.model').findOne({_id:req.body.jobId,sourceUrl:source,engineVersion:2}) : null;
-      await Novel.updateOne({_id:novelId},{$setOnInsert:{title:novelData.title,
-        titleEn:novelData.title,author:'System Scraper',authorEmail:'system@scraper',
-        ...(owner && /^[a-f\d]{24}$/i.test(owner.ownerId)?{authorId:owner.ownerId}:{}),
-        description:novelData.description || '',status:'خاصة',sourceUrl:source,
-        isWatched:false,chapters:[]}}, {upsert:true,runValidators:true,writeConcern:{w:'majority'}});
+      const novelId=await prepareScrapedNovel(Novel,source,novelData,owner);
       const id=key(source,n);
       // Concurrent deliveries adopt the same immutable original, never overwrite a translation.
       try {

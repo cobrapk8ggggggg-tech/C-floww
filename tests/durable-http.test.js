@@ -52,6 +52,17 @@ test('durable HTTP authorization, idempotency, catalogue snapshot and queue budg
   const cached=(await send('/api/automation/catalog/check',{...cat,chapterNumber:2},auth)).data;
   assert.equal(cached.chapter.number,2);assert.equal(cached.metadata.title,'Test');
   assert.equal((await send('/api/automation/catalog/save',{...cat,total:3,chapters:[]},auth)).status,409);
+  const newSource='https://novelfire.net/metadata-before-chapter';
+  const created=(await send('/api/automation/jobs',{...input,sourceUrl:newSource})).data;
+  assert.equal(await Novel.countDocuments({sourceUrl:newSource}),0);
+  const snapshot={sourceUrl:newSource,jobId:created.id,metadata:{title:'New private novel'},total:3,chapters:[{number:1,title:'Chapter 1',url:'https://novelfire.net/1'}]};
+  assert.equal((await send('/api/automation/catalog/save',snapshot,auth)).status,200);
+  assert.equal((await send('/api/automation/catalog/save',snapshot,auth)).status,200);
+  const prepared=await Novel.findOne({sourceUrl:newSource});
+  assert.equal(prepared.status,'خاصة');assert.equal(prepared.chapters.length,0);
+  assert.equal((await send('/api/automation/jobs/'+created.id)).data.novelId,prepared.id);
+  assert.equal(await Novel.countDocuments({sourceUrl:newSource}),1);
+  await send('/api/automation/jobs/'+created.id+'/cancel',{});
   const n=await Novel.findOne({sourceUrl:input.sourceUrl});
   const historic=await require('../backend/models/translationJob.model').create({novelId:n._id,status:'paused',targetChapters:[1],apiKeys:['synthetic-private-key']});
   const history=await send('/api/translator/jobs',undefined,{'x-test-admin':'true'});
